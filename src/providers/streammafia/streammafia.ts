@@ -17,7 +17,7 @@ export class StreamMafiaProvider extends BaseProvider {
     readonly id = 'streammafia';
     readonly name = 'MafiaEmbed';
     readonly enabled = true;
-    readonly BASE_URL = 'https://sf.streammafia.to';
+    readonly BASE_URL = 'https://player.nhdapi.com';
     readonly HEADERS = {
         'User-Agent': '',
         Accept: 'application/json, text/javascript, */*; q=0.01',
@@ -27,6 +27,24 @@ export class StreamMafiaProvider extends BaseProvider {
         Cookie: '',
         'x-api-token': '',
         'x-content-id': ''
+    };
+    readonly PLAY_HEADERS = {
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'accept-language': 'en-US,en;q=0.7',
+        'cache-control': 'no-cache',
+        pragma: 'no-cache',
+        priority: 'u=0, i',
+        'sec-ch-ua': '"(Not(A:Brand";v="99", "Microsoft Edge";v="133"',
+        'sec-ch-ua-full-version-list':
+            '"(Not(A:Brand";v="99.0.0.0", "Microsoft Edge";v="133"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Linux"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'none',
+        'sec-fetch-user': '?1',
+        'sec-gpc': '1',
+        'upgrade-insecure-requests': '1'
     };
 
     readonly capabilities: ProviderCapabilities = {
@@ -95,7 +113,7 @@ export class StreamMafiaProvider extends BaseProvider {
             return await this.mapApiResponse(api);
         } catch (err) {
             return this.emptyResult(
-                err instanceof Error ? err.message : 'Unknown error'
+                err instanceof Error ? err.message : 'Auto error'
             );
         }
     }
@@ -194,8 +212,6 @@ export class StreamMafiaProvider extends BaseProvider {
 
     private async resolveSwitch(sw: Switch): Promise<Source[]> {
         try {
-            const headers = { ...this.HEADERS };
-
             const url = `${this.BASE_URL}/api/source/${sw.file_code}`;
             const encrypted = await this.fetchPage(url);
 
@@ -204,8 +220,8 @@ export class StreamMafiaProvider extends BaseProvider {
             const api = decryptStreamMafia(encrypted);
 
             const fallbackAudio: AudioTrack = {
-                language: sw.lang_code?.toLowerCase() || 'unknown',
-                label: sw.lang || sw.lang_code || 'Unknown'
+                language: sw.lang_code?.toLowerCase() || 'Auto',
+                label: sw.lang || sw.lang_code || 'Auto'
             };
 
             return await this.extractSourcesFromApi(api, fallbackAudio);
@@ -224,11 +240,7 @@ export class StreamMafiaProvider extends BaseProvider {
             const parsed = await this.parseHLS(api.stream.hls_streaming);
 
             sources.push({
-                url: this.createProxyUrl(api.stream.hls_streaming, {
-                    ...this.HEADERS,
-                    Referer: this.BASE_URL + '/',
-                    Origin: this.BASE_URL
-                }),
+                url: this.createProxyUrl(api.stream.hls_streaming, {"User-Agent": ""}),
                 type: 'hls',
                 quality: parsed.quality || 'auto',
                 audioTracks:
@@ -244,13 +256,9 @@ export class StreamMafiaProvider extends BaseProvider {
 
         for (const download of api.stream?.download ?? []) {
             sources.push({
-                url: this.createProxyUrl(download.url, {
-                    ...this.HEADERS,
-                    Referer: this.BASE_URL + '/',
-                    Origin: this.BASE_URL
-                }),
+                url: this.createProxyUrl(api.stream.hls_streaming, {"User-Agent": ""}),
                 type: this.inferSourceType(download.url),
-                quality: this.normalizeQuality(download.quality, 'unknown'),
+                quality: this.normalizeQuality(download.quality, 'Auto'),
                 audioTracks: [fallbackAudio],
                 provider: {
                     id: this.id,
@@ -266,12 +274,12 @@ export class StreamMafiaProvider extends BaseProvider {
         const language =
             selected?.lang_code?.trim().toLowerCase() ||
             selected?.lang?.trim().toLowerCase() ||
-            'unknown';
+            'Auto';
 
         const label =
             selected?.lang?.trim() ||
             selected?.lang_code?.toUpperCase() ||
-            'Unknown';
+            'Auto';
 
         return { language, label };
     }
@@ -293,7 +301,7 @@ export class StreamMafiaProvider extends BaseProvider {
             const audioTracks = this.parseAudioTracks(content);
 
             if (variants.length === 0) {
-                return { quality: 'auto', audioTracks };
+                return { quality: 'Auto', audioTracks };
             }
 
             const best = variants.reduce((a, b) =>
@@ -301,7 +309,7 @@ export class StreamMafiaProvider extends BaseProvider {
             );
 
             return {
-                quality: `${best.resolution}p`,
+                quality: best.resolution.toString(),
                 audioTracks
             };
         } catch {
@@ -331,8 +339,7 @@ export class StreamMafiaProvider extends BaseProvider {
             if (!line.includes('TYPE=AUDIO')) continue;
 
             const language =
-                line.match(/LANGUAGE="([^"]+)"/)?.[1]?.toLowerCase() ??
-                'unknown';
+                line.match(/LANGUAGE="([^"]+)"/)?.[1]?.toLowerCase() ?? 'Auto';
             const label = line.match(/NAME="([^"]+)"/)?.[1] ?? language;
 
             tracks.push({ language, label });
@@ -353,7 +360,7 @@ export class StreamMafiaProvider extends BaseProvider {
         return 'hls';
     }
 
-    private normalizeQuality(value?: string, fallback = 'unknown'): string {
+    private normalizeQuality(value?: string, fallback = 'Auto'): string {
         if (!value) return fallback;
 
         const v = value.toLowerCase();
