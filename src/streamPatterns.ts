@@ -12,5 +12,8 @@ export const streamPatterns: RegExp[] = [
     /(epimetheus63|earth14|pandora20)\.workers\.dev/, // streammafia's workers.dev proxy domains
     /tiktokcdn\.com/,
     /\/content\/(.)*\/page\-(.)*\.html/,
-    /trendimovies\.com\/tgstream\/stream/
+    /trendimovies\.com\/tgstream\/stream/,
+    /cdn\.neuronix\.sbs/,
+    /cdn\d*\.zenty\.store/,
+    /febbox\.com/,
 ];

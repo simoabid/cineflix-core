@@ -51,6 +51,16 @@ export const knownThirdPartyProxies: Record<string, RegExp[]> = {
 
     'https://streams.smashystream.top': [/\/proxy\/m3u8\/(.+?)\/[^/]+$/],
 
+    // Vidify proxy domains (from old providers)
+    'https://proxyv1.vidify.top': [/^(.+)$/],
+    'https://proxyv2.vidify.top': [/^(.+)$/],
+
+    // WarezCDN worker proxy
+    'https://workerproxy.warezcdn.workers.dev': [/^(.+)$/],
+
+    // Shegu proxy
+    'https://shegu.net': [/^(.+)$/],
+
     // -----------------------------------------------------------------------
     // WILDCARD PATTERNS (Applied to ALL origins)
     // -----------------------------------------------------------------------
