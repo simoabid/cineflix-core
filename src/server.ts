@@ -79,6 +79,17 @@ async function main() {
     const registry = server.getRegistry();
     await registry.discoverProviders(path.join(__dirname, './providers/'));
 
+    // Register custom route to expose provider list
+    const fastifyApp = server.getInstance();
+    fastifyApp.get('/v1/providers', async (request, reply) => {
+        const providers = registry.getProviders().map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            enabled: p.enabled
+        }));
+        return reply.code(200).send(providers);
+    });
+
     await server.start();
 
     const publicUrl =
