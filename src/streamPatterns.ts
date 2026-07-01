@@ -16,4 +16,6 @@ export const streamPatterns: RegExp[] = [
     /cdn\.neuronix\.sbs/,
     /cdn\d*\.zenty\.store/,
     /febbox\.com/,
+    /cloudnestra\.com/, // vidsrc rcp/prorcp player + {v4} stream host
+    /neonhorizonworkshops\.com|wanderlynest\.com|orchidpixelgardens\.com/ // vidsrc {v1}-{v3} stream hosts
 ];
