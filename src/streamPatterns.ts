@@ -17,5 +17,11 @@ export const streamPatterns: RegExp[] = [
     /cdn\d*\.zenty\.store/,
     /febbox\.com/,
     /cloudnestra\.com/, // vidsrc rcp/prorcp player + {v4} stream host
-    /neonhorizonworkshops\.com|wanderlynest\.com|orchidpixelgardens\.com/ // vidsrc {v1}-{v3} stream hosts
+    /neonhorizonworkshops\.com|wanderlynest\.com|orchidpixelgardens\.com/, // vidsrc {v1}-{v3} stream hosts
+    /vidup\.to\/wyzie/, // vidup subtitle endpoints
+    /ythd\.org\/embed/, // vidup fallback embed domain
+    /niceoribit\.com/, // vidup direct stream CDN
+    /111movies\.net\/wyzie/, // 111movies subtitle endpoints
+    /dolphin-d55\.workers\.dev/, // 111movies stream CDN (Cloudflare Workers)
+    /curly-lab-ca94\.dolphin-d55\.workers\.dev/ // 111movies stream CDN
 ];
