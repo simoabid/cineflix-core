@@ -111,6 +111,7 @@ export async function resolveVidupStreamsViaBrowser(
 ): Promise<VidupStream[] | null> {
     let chromium: any;
     try {
+        // @ts-ignore
         chromium = (await import('playwright')).chromium;
     } catch {
         // Playwright not installed
