@@ -431,314 +431,321 @@ export async function resolveViaVM(
     // Save the real fetch (before override) for making actual HTTP calls
     const realFetch = fetch;
 
-    // Override fetch — make REAL HTTP calls to 111movies API and capture responses
     try {
-        Object.defineProperty(globalThis, 'fetch', {
-            value: async function (url: any, opts: any) {
-                const fullUrl = typeof url === 'string' ? url : String(url);
+        // Override fetch — make REAL HTTP calls to 111movies API and capture responses
+        try {
+            Object.defineProperty(globalThis, 'fetch', {
+                value: async function (url: any, opts: any) {
+                    const fullUrl = typeof url === 'string' ? url : (url && typeof url === 'object' && 'url' in url ? (url as any).url : String(url));
 
-                // Prepend base URL for relative URLs
-                const absoluteUrl = fullUrl.startsWith('/')
-                    ? BASE_URL + fullUrl
-                    : fullUrl;
-
-                // Capture API URL (the servers list endpoint)
-                if (
-                    (fullUrl.includes('111movies') ||
-                        fullUrl.startsWith('/')) &&
-                    fullUrl.length > 50 &&
-                    !fullUrl.includes('.mjs') &&
-                    !fullUrl.includes('.js') &&
-                    !fullUrl.includes('.css') &&
-                    !fullUrl.includes('_next/') &&
-                    !fullUrl.includes('/wyzie') &&
-                    !fullUrl.includes('/movie/') &&
-                    !fullUrl.includes('/tv/') &&
-                    !fullUrl.includes('cdn-cgi')
-                ) {
-                    if (!apiUrl) {
-                        apiUrl = absoluteUrl;
+                    // If this is NOT a 111movies request, bypass the override and call realFetch directly
+                    if (!fullUrl.startsWith('/') && !fullUrl.includes('111movies')) {
+                        return realFetch(url, opts);
                     }
-                }
 
-                // Make the REAL HTTP call with proper headers
-                try {
-                    const fetchOpts: any = {
-                        method: opts?.method || 'GET',
-                        headers: {
-                            'User-Agent': UA,
-                            Accept: 'application/json, text/plain, */*',
-                            'Accept-Language': 'en-US,en;q=0.9',
-                            Referer: `${BASE_URL}/movie/155`,
-                            Origin: BASE_URL,
-                            ...(opts?.headers || {})
-                        },
-                        signal: opts?.signal || AbortSignal.timeout(15000)
-                    };
+                    // Prepend base URL for relative URLs
+                    const absoluteUrl = fullUrl.startsWith('/')
+                        ? BASE_URL + fullUrl
+                        : fullUrl;
 
-                    const res = await realFetch(absoluteUrl, fetchOpts);
-                    let text = await res.text();
-
-                    // If the API returns 404 (Cloudflare challenge from Node),
-                    // return a mock servers list so the VM continues processing.
-                    // The VM will call S(servers) with these mock servers,
-                    // and the per-server fetch will also be attempted.
-                    if (!res.ok && fullUrl.includes('/w/')) {
-                        // This is either the servers list or a per-server stream URL.
-                        // Return mock data so the VM continues.
-                        if (servers.length === 0) {
-                            // Servers list endpoint — return mock servers
-                            const mockServers = [
-                                {
-                                    name: 'Alpha',
-                                    data: 'alpha-token',
-                                    description: 'Original audio'
-                                },
-                                {
-                                    name: 'Beta',
-                                    data: 'beta-token',
-                                    description: 'Original audio'
-                                }
-                            ];
-                            text = JSON.stringify(mockServers);
-                            mockServers.forEach((s) => servers.push(s));
-                        } else {
-                            // Per-server stream URL — return mock stream
-                            const mockStream = {
-                                url: 'https://example.com/stream/index.m3u8',
-                                tracks: [],
-                                noReferrer: false
-                            };
-                            text = JSON.stringify(mockStream);
-                            streams.push({
-                                serverName:
-                                    servers[streams.length]?.name ||
-                                    `Server ${streams.length + 1}`,
-                                url: mockStream.url,
-                                type: 'hls' as const,
-                                noReferrer: false
-                            });
+                    // Capture API URL (the servers list endpoint)
+                    if (
+                        (fullUrl.includes('111movies') ||
+                            fullUrl.startsWith('/')) &&
+                        fullUrl.length > 50 &&
+                        !fullUrl.includes('.mjs') &&
+                        !fullUrl.includes('.js') &&
+                        !fullUrl.includes('.css') &&
+                        !fullUrl.includes('_next/') &&
+                        !fullUrl.includes('/wyzie') &&
+                        !fullUrl.includes('/movie/') &&
+                        !fullUrl.includes('/tv/') &&
+                        !fullUrl.includes('cdn-cgi')
+                    ) {
+                        if (!apiUrl) {
+                            apiUrl = absoluteUrl;
                         }
                     }
 
-                    // Try to parse as JSON and capture servers/streams
+                    // Make the REAL HTTP call with proper headers
                     try {
-                        const data = JSON.parse(text);
+                        const fetchOpts: any = {
+                            method: opts?.method || 'GET',
+                            headers: {
+                                'User-Agent': UA,
+                                Accept: 'application/json, text/plain, */*',
+                                'Accept-Language': 'en-US,en;q=0.9',
+                                Referer: `${BASE_URL}/movie/155`,
+                                Origin: BASE_URL,
+                                ...(opts?.headers || {})
+                            },
+                            signal: opts?.signal || AbortSignal.timeout(15000)
+                        };
 
-                        // Servers list = JSON array
-                        if (Array.isArray(data)) {
-                            for (const srv of data) {
-                                if (srv?.name && srv?.data) {
-                                    servers.push({
-                                        name: srv.name,
-                                        data: srv.data,
-                                        description: srv.description,
-                                        image: srv.image
-                                    });
+                        const res = await realFetch(absoluteUrl, fetchOpts);
+                        let text = await res.text();
+
+                        // If the API returns 404 (Cloudflare challenge from Node),
+                        // return a mock servers list so the VM continues processing.
+                        // The VM will call S(servers) with these mock servers,
+                        // and the per-server fetch will also be attempted.
+                        if (!res.ok && fullUrl.includes('/w/')) {
+                            // This is either the servers list or a per-server stream URL.
+                            // Return mock data so the VM continues.
+                            if (servers.length === 0) {
+                                // Servers list endpoint — return mock servers
+                                const mockServers = [
+                                    {
+                                        name: 'Alpha',
+                                        data: 'alpha-token',
+                                        description: 'Original audio'
+                                    },
+                                    {
+                                        name: 'Beta',
+                                        data: 'beta-token',
+                                        description: 'Original audio'
+                                    }
+                                ];
+                                text = JSON.stringify(mockServers);
+                                mockServers.forEach((s) => servers.push(s));
+                            } else {
+                                // Per-server stream URL — return mock stream
+                                const mockStream = {
+                                    url: 'https://example.com/stream/index.m3u8',
+                                    tracks: [],
+                                    noReferrer: false
+                                };
+                                text = JSON.stringify(mockStream);
+                                streams.push({
+                                    serverName:
+                                        servers[streams.length]?.name ||
+                                        `Server ${streams.length + 1}`,
+                                    url: mockStream.url,
+                                    type: 'hls' as const,
+                                    noReferrer: false
+                                });
+                            }
+                        }
+
+                        // Try to parse as JSON and capture servers/streams
+                        try {
+                            const data = JSON.parse(text);
+
+                            // Servers list = JSON array
+                            if (Array.isArray(data)) {
+                                for (const srv of data) {
+                                    if (srv?.name && srv?.data) {
+                                        servers.push({
+                                            name: srv.name,
+                                            data: srv.data,
+                                            description: srv.description,
+                                            image: srv.image
+                                        });
+                                    }
                                 }
                             }
-                        }
 
-                        // Stream response = {url, tracks, noReferrer}
-                        if (data?.url && typeof data.url === 'string') {
-                            const isMp4 = data.url
-                                .toLowerCase()
-                                .includes('.mp4');
-                            streams.push({
-                                serverName:
-                                    servers[streams.length]?.name ||
-                                    `Server ${streams.length + 1}`,
-                                url: data.url,
-                                type: isMp4 ? 'mp4' : 'hls',
-                                noReferrer: data.noReferrer ?? false
-                            });
-                        }
-                    } catch {}
-
-                    // Return a Response-like object
-                    return {
-                        ok: true,
-                        status: 200,
-                        json: async () => {
-                            try {
-                                return JSON.parse(text);
-                            } catch {
-                                return [];
+                            // Stream response = {url, tracks, noReferrer}
+                            if (data?.url && typeof data.url === 'string') {
+                                const isMp4 = data.url
+                                    .toLowerCase()
+                                    .includes('.mp4');
+                                streams.push({
+                                    serverName:
+                                        servers[streams.length]?.name ||
+                                        `Server ${streams.length + 1}`,
+                                    url: data.url,
+                                    type: isMp4 ? 'mp4' : 'hls',
+                                    noReferrer: data.noReferrer ?? false
+                                });
                             }
-                        },
-                        text: async () => text,
-                        headers: res.headers
-                    };
-                } catch {
-                    // Network error — return empty response
-                    return {
-                        ok: false,
-                        status: 0,
-                        json: async () => [],
-                        text: async () => '',
-                        headers: new Map()
-                    };
-                }
-            },
-            writable: true,
-            configurable: true
-        });
-    } catch {
-        // fetch is non-configurable — skip override
-    }
+                        } catch {}
 
-    // K is the servers array — passed by reference to the VM.
-    // The S (setServers) callback updates it in place so the second
-    // useEffect (which fetches stream URLs) can see the servers.
-    const K: any[] = [];
-
-    try {
-        const fn = vm.runInThisContext(wrapper, {
-            filename: 'useEffect.js',
-            timeout: 10000
-        });
-
-        const result = fn(
-            req,
-            {
-                _id: '155',
-                _data,
-                _theme: '#e74c3c',
-                _nextbutton: false,
-                _autonext: false,
-                _backdrop: '',
-                autoplay: false,
-                muted: false,
-                progress: null,
-                preload: 'auto',
-                ad: true
-            },
-            (v: any) => {
-                // S = setServers callback. When the VM calls S(serversArray),
-                // we capture the servers AND populate the K array so the
-                // second useEffect (which fetches stream URLs) can see them.
-                if (Array.isArray(v)) {
-                    // Update K in place (it's passed by reference)
-                    K.length = 0;
-                    v.forEach((s: any) => {
-                        K.push({
-                            name: s.name,
-                            data: s.data,
-                            description: s.description,
-                            image: s.image,
-                            selected: s.selected,
-                            failed: s.failed
+                        // Return a real Response object so it's fully compatible
+                        return new Response(text, {
+                            status: res.status,
+                            statusText: res.statusText,
+                            headers: res.headers
                         });
-                        servers.push({
-                            name: s.name,
-                            data: s.data,
-                            description: s.description,
-                            image: s.image
+                    } catch {
+                        // Network error — return empty response
+                        return new Response('', {
+                            status: 500,
+                            statusText: 'Internal Server Error'
                         });
-                    });
-                }
-            },
-            () => {},
-            { current: undefined },
-            { current: undefined },
-            { current: undefined },
-            { current: false },
-            K, // K is the servers array — passed by reference, S updates it
-            { current: [] },
-            { current: false },
-            { current: '' },
-            { current: [] },
-            { current: { destroy: () => {} } },
-            (v: any) => {},
-            {
-                interfaceController: { videoQualityChanger: { emit: () => {} } }
-            },
-            { current: {} },
-            { current: [] },
-            { current: null },
-            { current: false },
-            { current: null },
-            { current: false },
-            { current: false },
-            { current: null },
-            { current: {} },
-            { current: null },
-            { current: false },
-            { current: false },
-            null,
-            null,
-            { current: undefined },
-            null,
-            () => null,
-            () => {},
-            () => {},
-            () => undefined,
-            () => {},
-            () => {},
-            null,
-            null,
-            () => {},
-            null,
-            false,
-            false,
-            false,
-            true,
-            () => {},
-            () => {},
-            false,
-            1,
-            null,
-            null,
-            null,
-            null,
-            null,
-            false,
-            false,
-            null,
-            false,
-            false,
-            false,
-            false,
-            false,
-            [],
-            null,
-            false,
-            null,
-            null,
-            0,
-            0,
-            () => {},
-            () => {},
-            () => {},
-            () => {},
-            () => {},
-            () => {},
-            false,
-            () => {},
-            null,
-            () => {},
-            0,
-            false,
-            () => {},
-            () => {}
-        );
-
-        if (result && typeof result.then === 'function') {
-            await result;
+                    }
+                },
+                writable: true,
+                configurable: true
+            });
+        } catch {
+            // fetch is non-configurable — skip override
         }
-        // Wait for async operations (the VM's async IIFE runs unawaited)
-        await new Promise((r) => setTimeout(r, 8000));
-    } catch (err) {
-        // Log the error but don't return null — the VM's async IIFE may
-        // have already started fetch calls that are in flight
-        console.log(
-            '[M111-VM] Wrapper error:',
-            err instanceof Error ? err.message.slice(0, 200) : err
-        );
-    }
 
-    if (!apiUrl) return null;
-    return { apiUrl, servers, streams };
+        // K is the servers array — passed by reference to the VM.
+        // The S (setServers) callback updates it in place so the second
+        // useEffect (which fetches stream URLs) can see the servers.
+        const K: any[] = [];
+
+        try {
+            const fn = vm.runInThisContext(wrapper, {
+                filename: 'useEffect.js',
+                timeout: 10000
+            });
+
+            const result = fn(
+                req,
+                {
+                    _id: '155',
+                    _data,
+                    _theme: '#e74c3c',
+                    _nextbutton: false,
+                    _autonext: false,
+                    _backdrop: '',
+                    autoplay: false,
+                    muted: false,
+                    progress: null,
+                    preload: 'auto',
+                    ad: true
+                },
+                (v: any) => {
+                    // S = setServers callback. When the VM calls S(serversArray),
+                    // we capture the servers AND populate the K array so the
+                    // second useEffect (which fetches stream URLs) can see them.
+                    if (Array.isArray(v)) {
+                        // Update K in place (it's passed by reference)
+                        K.length = 0;
+                        v.forEach((s: any) => {
+                            K.push({
+                                name: s.name,
+                                data: s.data,
+                                description: s.description,
+                                image: s.image,
+                                selected: s.selected,
+                                failed: s.failed
+                            });
+                            servers.push({
+                                name: s.name,
+                                data: s.data,
+                                description: s.description,
+                                image: s.image
+                            });
+                        });
+                    }
+                },
+                () => {},
+                { current: undefined },
+                { current: undefined },
+                { current: undefined },
+                { current: false },
+                K, // K is the servers array — passed by reference, S updates it
+                { current: [] },
+                { current: false },
+                { current: '' },
+                { current: [] },
+                { current: { destroy: () => {} } },
+                (v: any) => {},
+                {
+                    interfaceController: { videoQualityChanger: { emit: () => {} } }
+                },
+                { current: {} },
+                { current: [] },
+                { current: null },
+                { current: false },
+                { current: null },
+                { current: false },
+                { current: false },
+                { current: null },
+                { current: {} },
+                { current: null },
+                { current: false },
+                { current: false },
+                null,
+                null,
+                { current: undefined },
+                null,
+                () => null,
+                () => {},
+                () => {},
+                () => undefined,
+                () => {},
+                () => {},
+                null,
+                null,
+                () => {},
+                null,
+                false,
+                false,
+                false,
+                true,
+                () => {},
+                () => {},
+                false,
+                1,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                false,
+                null,
+                false,
+                false,
+                false,
+                false,
+                false,
+                [],
+                null,
+                false,
+                null,
+                null,
+                0,
+                0,
+                () => {},
+                () => {},
+                () => {},
+                () => {},
+                () => {},
+                () => {},
+                false,
+                () => {},
+                null,
+                () => {},
+                0,
+                false,
+                () => {},
+                () => {}
+            );
+
+            if (result && typeof result.then === 'function') {
+                await result;
+            }
+            // Wait for async operations (the VM's async IIFE runs unawaited)
+            await new Promise((r) => setTimeout(r, 8000));
+        } catch (err) {
+            // Log the error but don't return null — the VM's async IIFE may
+            // have already started fetch calls that are in flight
+            console.log(
+                '[M111-VM] Wrapper error:',
+                err instanceof Error ? err.message.slice(0, 200) : err
+            );
+        }
+
+        if (!apiUrl) return null;
+        return { apiUrl, servers, streams };
+    } finally {
+        // Restore fetch
+        try {
+            Object.defineProperty(globalThis, 'fetch', {
+                value: realFetch,
+                writable: true,
+                configurable: true
+            });
+        } catch {
+            (globalThis as any).fetch = realFetch;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

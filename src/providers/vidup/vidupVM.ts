@@ -299,53 +299,58 @@ async function ensureVMLoaded(): Promise<any> {
 
     // Override fetch to prepend base URL and add CSRF headers
     const origFetch = fetch;
-    (globalThis as any).fetch = async function (url: any, opts: any) {
-        let fullUrl = typeof url === 'string' ? url : String(url);
-        if (fullUrl.startsWith('/')) {
-            fullUrl = VIDUP_BASE + fullUrl;
-        }
-        opts = opts || {};
-        const eh = opts.headers || {};
-        const headers: Record<string, string> = {};
-        if (eh instanceof Headers) {
-            eh.forEach((v: string, k: string) => (headers[k] = v));
-        } else if (typeof eh === 'string') {
-            try {
-                Object.assign(headers, JSON.parse(eh));
-            } catch {}
-        } else {
-            Object.assign(headers, eh);
-        }
-        if (!headers['X-Requested-With'])
-            headers['X-Requested-With'] = CSRF_HEADERS['X-Requested-With'];
-        if (!headers['X-Csrf-Token'])
-            headers['X-Csrf-Token'] = CSRF_HEADERS['X-Csrf-Token'];
-        if (!headers['Referer']) headers['Referer'] = `${VIDUP_BASE}/`;
-        if (!headers['Origin']) headers['Origin'] = VIDUP_BASE;
-        opts.headers = headers;
-        return origFetch(fullUrl, opts);
-    };
+    try {
+        (globalThis as any).fetch = async function (url: any, opts: any) {
+            const fullUrl = typeof url === 'string' ? url : (url && typeof url === 'object' && 'url' in url ? (url as any).url : String(url));
+            if (!fullUrl.startsWith('/') && !fullUrl.includes('vidup.to')) {
+                return origFetch(url, opts);
+            }
+            let targetUrl = fullUrl.startsWith('/') ? VIDUP_BASE + fullUrl : fullUrl;
+            opts = opts || {};
+            const eh = opts.headers || {};
+            const headers: Record<string, string> = {};
+            if (eh instanceof Headers) {
+                eh.forEach((v: string, k: string) => (headers[k] = v));
+            } else if (typeof eh === 'string') {
+                try {
+                    Object.assign(headers, JSON.parse(eh));
+                } catch {}
+            } else {
+                Object.assign(headers, eh);
+            }
+            if (!headers['X-Requested-With'])
+                headers['X-Requested-With'] = CSRF_HEADERS['X-Requested-With'];
+            if (!headers['X-Csrf-Token'])
+                headers['X-Csrf-Token'] = CSRF_HEADERS['X-Csrf-Token'];
+            if (!headers['Referer']) headers['Referer'] = `${VIDUP_BASE}/`;
+            if (!headers['Origin']) headers['Origin'] = VIDUP_BASE;
+            opts.headers = headers;
+            return origFetch(targetUrl, opts);
+        };
 
-    // Provide window.parent for VM's postMessage calls
-    (globalThis as any).parent = {
-        postMessage: () => {},
-        addEventListener: () => {}
-    };
-    (globalThis as any).top = (globalThis as any).parent;
+        // Provide window.parent for VM's postMessage calls
+        (globalThis as any).parent = {
+            postMessage: () => {},
+            addEventListener: () => {}
+        };
+        (globalThis as any).top = (globalThis as any).parent;
 
-    // Execute the VM code
-    const factoryCode = `(function(t, e, n) {\n${vmCode}\n})`;
-    // eslint-disable-next-line no-eval
-    const factory = eval(factoryCode);
-    factory(modObj, modObj.exports, runtime.require);
+        // Execute the VM code
+        const factoryCode = `(function(t, e, n) {\n${vmCode}\n})`;
+        // eslint-disable-next-line no-eval
+        const factory = eval(factoryCode);
+        factory(modObj, modObj.exports, runtime.require);
 
-    vmExports = modObj.exports;
-    // Store the crypto module (module 3018) on the exports so resolveServersViaVM
-    // can pass it to av() as props.crypto. The VM needs Node's crypto (randomBytes,
-    // createCipheriv, etc.) — WebCrypto doesn't have these.
-    vmExports._cryptoModule = runtime.require(3018);
-    vmLoadTime = Date.now();
-    return vmExports;
+        vmExports = modObj.exports;
+        // Store the crypto module (module 3018) on the exports so resolveServersViaVM
+        // can pass it to av() as props.crypto. The VM needs Node's crypto (randomBytes,
+        // createCipheriv, etc.) — WebCrypto doesn't have these.
+        vmExports._cryptoModule = runtime.require(3018);
+        vmLoadTime = Date.now();
+        return vmExports;
+    } finally {
+        (globalThis as any).fetch = origFetch;
+    }
 }
 
 /**
@@ -381,136 +386,144 @@ export async function resolveServersViaVM(
         mediaType === 'movie'
             ? `${VIDUP_BASE}/movie/${tmdbId}`
             : `${VIDUP_BASE}/tv/${tmdbId}`;
-    (globalThis as any).fetch = async function (url: any, opts: any) {
-        let fullUrl = typeof url === 'string' ? url : String(url);
-        if (fullUrl.startsWith('/')) fullUrl = VIDUP_BASE + fullUrl;
-        opts = opts || {};
-        const eh = opts.headers || {};
-        const headers: Record<string, string> = {};
-        if (eh instanceof Headers) {
-            eh.forEach((v: string, k: string) => (headers[k] = v));
-        } else if (typeof eh === 'string') {
-            try {
-                Object.assign(headers, JSON.parse(eh));
-            } catch {}
-        } else {
-            Object.assign(headers, eh);
-        }
-        if (!headers['X-Requested-With'])
-            headers['X-Requested-With'] = CSRF_HEADERS['X-Requested-With'];
-        if (!headers['X-Csrf-Token'])
-            headers['X-Csrf-Token'] = CSRF_HEADERS['X-Csrf-Token'];
-        if (!headers['Referer']) headers['Referer'] = referer;
-        if (!headers['Origin']) headers['Origin'] = VIDUP_BASE;
-        opts.headers = headers;
-        return realFetch(fullUrl, opts);
-    };
 
-    // Re-apply window.parent
-    (globalThis as any).parent = {
-        postMessage: () => {},
-        addEventListener: () => {}
-    };
-    (globalThis as any).top = (globalThis as any).parent;
-
-    const props: any = {
-        en: enToken,
-        server: undefined,
-        setServers: (s: any) => {
-            if (Array.isArray(s)) {
-                for (const srv of s) {
-                    servers.push({
-                        name: srv.name,
-                        data: srv.data,
-                        description: srv.description,
-                        image: srv.image
-                    });
-                }
+    try {
+        (globalThis as any).fetch = async function (url: any, opts: any) {
+            const fullUrl = typeof url === 'string' ? url : (url && typeof url === 'object' && 'url' in url ? (url as any).url : String(url));
+            if (!fullUrl.startsWith('/') && !fullUrl.includes('vidup.to')) {
+                return realFetch(url, opts);
             }
-        },
-        setState: () => {},
-        setFavServer: () => {},
-        crypto: cryptoModule,
-        encode: exports.o4,
-        window: globalThis,
-        document: {
-            createElement: () => ({}),
-            getElementsByTagName: () => [],
+            let targetUrl = fullUrl.startsWith('/') ? VIDUP_BASE + fullUrl : fullUrl;
+            opts = opts || {};
+            const eh = opts.headers || {};
+            const headers: Record<string, string> = {};
+            if (eh instanceof Headers) {
+                eh.forEach((v: string, k: string) => (headers[k] = v));
+            } else if (typeof eh === 'string') {
+                try {
+                    Object.assign(headers, JSON.parse(eh));
+                } catch {}
+            } else {
+                Object.assign(headers, eh);
+            }
+            if (!headers['X-Requested-With'])
+                headers['X-Requested-With'] = CSRF_HEADERS['X-Requested-With'];
+            if (!headers['X-Csrf-Token'])
+                headers['X-Csrf-Token'] = CSRF_HEADERS['X-Csrf-Token'];
+            if (!headers['Referer']) headers['Referer'] = referer;
+            if (!headers['Origin']) headers['Origin'] = VIDUP_BASE;
+            opts.headers = headers;
+            return realFetch(targetUrl, opts);
+        };
+
+        // Re-apply window.parent
+        (globalThis as any).parent = {
+            postMessage: () => {},
             addEventListener: () => {}
-        },
-        navigator: {
-            userAgent: UA,
-            platform: 'Win32',
-            language: 'en-US',
-            plugins: { length: 5 },
-            maxTouchPoints: 0
-        },
-        localStorage: {
-            getItem: () => null,
-            setItem: () => {},
-            removeItem: () => {},
-            clear: () => {}
-        },
-        console,
-        JSON,
-        Math,
-        Date,
-        RegExp,
-        Map,
-        Set,
-        WeakMap,
-        WeakSet,
-        Array,
-        Object,
-        Number,
-        String,
-        Boolean,
-        Symbol,
-        Function,
-        screen: { width: 1920, height: 1080, colorDepth: 24 },
-        Error,
-        TypeError,
-        RangeError,
-        SyntaxError,
-        parseInt,
-        parseFloat,
-        isNaN,
-        isFinite,
-        encodeURIComponent,
-        decodeURIComponent,
-        NaN,
-        Infinity,
-        undefined,
-        Promise,
-        Proxy,
-        Reflect,
-        Uint8Array,
-        Int8Array,
-        Uint16Array,
-        Int16Array,
-        Uint32Array,
-        Int32Array,
-        Float32Array,
-        Float64Array,
-        BigInt,
-        fetch,
-        TextEncoder,
-        TextDecoder,
-        URL,
-        URLSearchParams,
-        AbortSignal,
-        AbortController,
-        Buffer,
-        atob,
-        btoa
-    };
+        };
+        (globalThis as any).top = (globalThis as any).parent;
 
-    await exports.av(props, {});
+        const props: any = {
+            en: enToken,
+            server: undefined,
+            setServers: (s: any) => {
+                if (Array.isArray(s)) {
+                    for (const srv of s) {
+                        servers.push({
+                            name: srv.name,
+                            data: srv.data,
+                            description: srv.description,
+                            image: srv.image
+                        });
+                    }
+                }
+            },
+            setState: () => {},
+            setFavServer: () => {},
+            crypto: cryptoModule,
+            encode: exports.o4,
+            window: globalThis,
+            document: {
+                createElement: () => ({}),
+                getElementsByTagName: () => [],
+                addEventListener: () => {}
+            },
+            navigator: {
+                userAgent: UA,
+                platform: 'Win32',
+                language: 'en-US',
+                plugins: { length: 5 },
+                maxTouchPoints: 0
+            },
+            localStorage: {
+                getItem: () => null,
+                setItem: () => {},
+                removeItem: () => {},
+                clear: () => {}
+            },
+            console,
+            JSON,
+            Math,
+            Date,
+            RegExp,
+            Map,
+            Set,
+            WeakMap,
+            WeakSet,
+            Array,
+            Object,
+            Number,
+            String,
+            Boolean,
+            Symbol,
+            Function,
+            screen: { width: 1920, height: 1080, colorDepth: 24 },
+            Error,
+            TypeError,
+            RangeError,
+            SyntaxError,
+            parseInt,
+            parseFloat,
+            isNaN,
+            isFinite,
+            encodeURIComponent,
+            decodeURIComponent,
+            NaN,
+            Infinity,
+            undefined,
+            Promise,
+            Proxy,
+            Reflect,
+            Uint8Array,
+            Int8Array,
+            Uint16Array,
+            Int16Array,
+            Uint32Array,
+            Int32Array,
+            Float32Array,
+            Float64Array,
+            BigInt,
+            fetch: globalThis.fetch,
+            TextEncoder,
+            TextDecoder,
+            URL,
+            URLSearchParams,
+            AbortSignal,
+            AbortController,
+            Buffer,
+            atob,
+            btoa
+        };
 
-    // Wait a bit for async operations to complete
-    await new Promise((r) => setTimeout(r, 2000));
+        await exports.av(props, {});
 
-    return servers;
+        // Wait a bit for async operations to complete
+        await new Promise((r) => setTimeout(r, 2000));
+
+        return servers;
+    } finally {
+        (globalThis as any).fetch = realFetch;
+    }
 }
 
 // ---------------------------------------------------------------------------
