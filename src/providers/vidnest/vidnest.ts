@@ -301,17 +301,18 @@ export class VidNestProvider extends BaseProvider {
 
     private inferSourceType(type: string, url: string): SourceType {
         const t = (type ?? '').toLowerCase();
-        if (t === 'hls' || url.includes('.m3u8')) return 'hls';
-        if (t === 'dash' || url.includes('.mpd')) return 'dash';
-        if (t === 'mp4' || url.includes('.mp4')) return 'mp4';
-        if (t === 'mkv' || url.includes('.mkv')) return 'mkv';
-        if (t === 'webm' || url.includes('.webm')) return 'webm';
+        const u = (url ?? '').toLowerCase();
+        if (t === 'hls' || u.includes('.m3u8')) return 'hls';
+        if (t === 'dash' || u.includes('.mpd')) return 'dash';
+        if (t === 'mp4' || u.includes('.mp4')) return 'mp4';
+        if (t === 'mkv' || u.includes('.mkv')) return 'mkv';
+        if (t === 'webm' || u.includes('.webm')) return 'webm';
         if (t === 'embed') return 'embed';
         return 'hls';
     }
 
     private inferSubtitleFormat(url: string): SubtitleFormat {
-        const u = url.toLowerCase();
+        const u = (url ?? '').toLowerCase();
         if (u.includes('.vtt')) return 'vtt';
         if (u.includes('.srt')) return 'srt';
         if (u.includes('.ass')) return 'ass';
