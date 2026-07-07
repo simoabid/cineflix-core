@@ -67,7 +67,7 @@ export class VidNestProvider extends BaseProvider {
         klikxxi: {
             parse: (d) => decrypt<klikxxiResponse>(d),
             mapSources: (root) =>
-                root.sources.map((s) => ({
+                (root?.sources ?? []).map((s) => ({
                     url: this.createProxyUrl(s.url),
                     type: this.inferSourceType(s.type, s.url),
                     quality: s.quality,
@@ -80,7 +80,7 @@ export class VidNestProvider extends BaseProvider {
         allmovies: {
             parse: (d) => decrypt<allmoviesResponse>(d),
             mapSources: (root) =>
-                root.streams.map((s) => ({
+                (root?.streams ?? []).map((s) => ({
                     url: this.createProxyUrl(s.url),
                     type: this.inferSourceType(s.type, s.url),
                     quality: 'Auto',
@@ -102,7 +102,7 @@ export class VidNestProvider extends BaseProvider {
                 }
             ],
             mapSubtitles: (root) =>
-                root.subtitles.map((s) => ({
+                (root?.subtitles ?? []).map((s) => ({
                     url: this.createProxyUrl(s.url, root.headers),
                     label: s.lang,
                     format: this.inferSubtitleFormat(s.url)
@@ -112,7 +112,7 @@ export class VidNestProvider extends BaseProvider {
         hollymoviehd: {
             parse: (d) => decrypt<hollymoviehdResponse>(d),
             mapSources: (root) =>
-                root.sources.map((s) => ({
+                (root?.sources ?? []).map((s) => ({
                     url: this.createProxyUrl(s.file),
                     type: this.inferSourceType(s.type, s.file),
                     quality: s.label,
@@ -140,7 +140,7 @@ export class VidNestProvider extends BaseProvider {
                 }
             ],
             mapSubtitles: (root) =>
-                root.data.stream.captions.map((c) => ({
+                (root?.data?.stream?.captions ?? []).map((c) => ({
                     url: this.createProxyUrl(c.url, root.headers),
                     label: c.language,
                     format: this.inferSubtitleFormat(c.url)
@@ -150,7 +150,7 @@ export class VidNestProvider extends BaseProvider {
         delta: {
             parse: (d) => decrypt<deltaResponse>(d),
             mapSources: (root) =>
-                root.streams.map((s) => ({
+                (root?.streams ?? []).map((s) => ({
                     url: this.createProxyUrl(s.url),
                     type: this.inferSourceType(s.type, s.url),
                     quality: 'Auto',
@@ -165,7 +165,7 @@ export class VidNestProvider extends BaseProvider {
         purstream: {
             parse: (d) => decrypt<purstreamResponse>(d),
             mapSources: (root) =>
-                root.sources.map((s) => ({
+                (root?.sources ?? []).map((s) => ({
                     url: this.createProxyUrl(s.url),
                     type: this.inferSourceType(s.format, s.url),
                     quality: this.inferQuality(s.name),
@@ -178,7 +178,7 @@ export class VidNestProvider extends BaseProvider {
         moviebox: {
             parse: (d) => decrypt<movieboxSource>(d),
             mapSources: (root) =>
-                root.url.map((u) => ({
+                (root?.url ?? []).map((u) => ({
                     url: this.createProxyUrl(u.link, this.HEADERS),
                     type: this.inferSourceType(u.type, u.link),
                     quality: 'Auto',
