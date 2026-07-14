@@ -8,67 +8,71 @@ import type { VideasyServer } from './videasy.types.js';
 import { decryptResponse } from './decryptor.js';
 
 /**
- * all known api endpoints. mb-flix is the primary english source.
- * endpoints like meine, overflix, cuevana serve other languages.
- * hdmovie returns sources where the "quality" field is actually
- * a language label ("Hindi", "English") rather than a resolution.
- * those which are commented do not work
+ * videasy migrated its backend to api.wingsdatabase.com and now requires a
+ * per-media `seed` (fetched from /seed?mediaId=<tmdbId>) plus `enc=2` on every
+ * sources-with-title request. the seed must also be forwarded to enc-dec.app
+ * when decrypting the returned blob.
+ *
+ * server names below use videasy's public codenames. the "Original" servers
+ * carry the primary (usually english) audio. hdmovie ("Vyse") returns sources
+ * whose "quality" field is actually a language label, so it is filtered down to
+ * english via `qualityFilter`. the non-english servers (german/hindi/spanish/
+ * portuguese) are kept commented out to preserve the english-first behavior.
  */
 
 const VIDEASY_SERVERS: readonly VideasyServer[] = [
-    // { name: 'primesrcme', url: 'https://api.videasy.net/primesrcme/sources-with-title' },
-    // { name: 'm4uhd',      url: 'https://api.videasy.net/m4uhd/sources-with-title' },
-    // { name: 'meine-de',   url: 'https://api.videasy.net/meine/sources-with-title', language: 'german' },
-    // { name: 'meine-it',   url: 'https://api.videasy.net/meine/sources-with-title', language: 'italian' },
-    // { name: 'meine-fr',   url: 'https://api.videasy.net/meine/sources-with-title', language: 'french' },
-    // { name: 'overflix',    url: 'https://api2.videasy.net/overflix/sources-with-title',   language: 'english' },
-    // { name: 'visioncine',  url: 'https://api.videasy.net/visioncine/sources-with-title',  language: 'english' },
-    // { name: 'hdmovie',     url: 'https://api.videasy.net/hdmovie/sources-with-title',     language: 'english' },
-    // { name: 'primewire',   url: 'https://api2.videasy.net/primewire/sources-with-title',  language: 'english' },
-
     {
-        name: 'cuevana',
-        url: 'https://api2.videasy.net/cuevana/sources-with-title',
-        language: 'english'
+        name: 'jett',
+        url: 'https://api.wingsdatabase.com/jett/sources-with-title'
     },
     {
-        name: 'mb-flix',
-        url: 'https://api.videasy.net/mb-flix/sources-with-title',
-        language: 'english'
+        name: 'yoru',
+        url: 'https://api.wingsdatabase.com/cdn/sources-with-title'
     },
     {
-        name: '1movies',
-        url: 'https://api.videasy.net/1movies/sources-with-title',
-        language: 'english'
+        name: 'tejo',
+        url: 'https://api.wingsdatabase.com/tejo/sources-with-title'
     },
     {
-        name: 'cdn',
-        url: 'https://api.videasy.net/cdn/sources-with-title',
-        language: 'english'
+        name: 'neon',
+        url: 'https://api.wingsdatabase.com/neon2/sources-with-title'
     },
     {
-        name: 'superflix',
-        url: 'https://api.videasy.net/superflix/sources-with-title',
-        language: 'english'
+        name: 'sage',
+        url: 'https://api.wingsdatabase.com/ym/sources-with-title'
     },
     {
-        name: 'lamovie',
-        url: 'https://api.videasy.net/lamovie/sources-with-title',
-        language: 'english'
+        name: 'cypher',
+        url: 'https://api.wingsdatabase.com/downloader2/sources-with-title'
+    },
+    {
+        name: 'breach',
+        url: 'https://api.wingsdatabase.com/m4uhd/sources-with-title'
+    },
+    {
+        name: 'vyse',
+        url: 'https://api.wingsdatabase.com/hdmovie/sources-with-title',
+        qualityFilter: 'English'
     }
+
+    // non-english servers (enable if you want multi-language output):
+    // { name: 'killjoy', url: 'https://api.wingsdatabase.com/meine/sources-with-title', language: 'german' },
+    // { name: 'fade',    url: 'https://api.wingsdatabase.com/hdmovie/sources-with-title', qualityFilter: 'Hindi' },
+    // { name: 'omen',    url: 'https://api.wingsdatabase.com/lamovie/sources-with-title', language: 'spanish' },
+    // { name: 'raze',    url: 'https://api.wingsdatabase.com/superflix/sources-with-title', language: 'portuguese' }
 ] as const;
 
 export class VideasyProvider extends BaseProvider {
     readonly id = 'Videasy';
     readonly name = 'Videasy';
     readonly enabled = true;
-    readonly BASE_URL = 'https://api.videasy.net';
+    readonly BASE_URL = 'https://api.wingsdatabase.com';
     readonly HEADERS = {
         'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        Accept: 'application/json, */*; q=0.01',
-        Referer: 'https://player.videasy.net/',
-        Origin: 'https://player.videasy.net'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+        Accept: '*/*',
+        Referer: 'https://player.videasy.to/',
+        Origin: 'https://player.videasy.to'
     };
 
     readonly capabilities: ProviderCapabilities = {
@@ -87,8 +91,21 @@ export class VideasyProvider extends BaseProvider {
     private async getSources(
         media: ProviderMediaObject
     ): Promise<ProviderResult> {
+        // videasy now gates every request behind a per-media seed. fetch it once
+        // and reuse it across all servers + the enc-dec.app decrypt call.
+        const seed = await this.fetchSeed(String(media.tmdbId));
+
+        if (!seed) {
+            return this.emptyResult(
+                'could not obtain videasy seed (api.wingsdatabase.com/seed)',
+                media
+            );
+        }
+
         const results = await Promise.allSettled(
-            VIDEASY_SERVERS.map((server) => this.fetchFromServer(server, media))
+            VIDEASY_SERVERS.map((server) =>
+                this.fetchFromServer(server, media, seed)
+            )
         );
 
         const sources: ProviderResult['sources'] = [];
@@ -130,12 +147,29 @@ export class VideasyProvider extends BaseProvider {
     // suppose the small invalid response indicates that they might have changed their setup
     // while the capital indicates that the response might be short not enough, hope it helps.
 
+    // fetches videasy's per-media seed from api.wingsdatabase.com.
+    // returns null on any failure so the caller can bail out cleanly.
+    private async fetchSeed(tmdbId: string): Promise<string | null> {
+        try {
+            const res = await fetch(
+                `${this.BASE_URL}/seed?mediaId=${encodeURIComponent(tmdbId)}`,
+                { headers: this.HEADERS }
+            );
+            if (!res.ok) return null;
+            const json = (await res.json()) as { seed?: string | number };
+            return json?.seed != null ? String(json.seed) : null;
+        } catch {
+            return null;
+        }
+    }
+
     // fetches one server, reads plain text blob, decrypts via enc-dec.app
     private async fetchFromServer(
         server: VideasyServer,
-        media: ProviderMediaObject
+        media: ProviderMediaObject,
+        seed: string
     ): Promise<ProviderResult | null> {
-        const params = this.buildParams(server, media);
+        const params = this.buildParams(server, media, seed);
         const url = `${server.url}?${new URLSearchParams(params as Record<string, string>)}`;
         const response = await fetch(url, { headers: this.HEADERS });
 
@@ -150,13 +184,27 @@ export class VideasyProvider extends BaseProvider {
             return this.emptyResult('INVALID RESPONSE', media);
         }
 
-        const decrypted = await decryptResponse(blob, String(media.tmdbId));
+        const decrypted = await decryptResponse(
+            blob,
+            String(media.tmdbId),
+            seed
+        );
 
         if (!decrypted || decrypted.sources.length === 0) {
             return this.emptyResult('Unable to Decode', media);
         }
 
-        const sources: ProviderResult['sources'] = decrypted.sources
+        // some servers (e.g. vyse/hdmovie) put a language label in "quality";
+        // qualityFilter narrows those down to the language we actually want.
+        const rawSources = server.qualityFilter
+            ? decrypted.sources.filter(
+                  (s) =>
+                      (s.quality ?? '').toLowerCase() ===
+                      server.qualityFilter!.toLowerCase()
+              )
+            : decrypted.sources;
+
+        const sources: ProviderResult['sources'] = rawSources
             .filter((s) => !!s?.url)
             .map((s) => ({
                 url: this.createProxyUrl(s.url, this.HEADERS),
@@ -182,18 +230,24 @@ export class VideasyProvider extends BaseProvider {
         return { sources, subtitles, diagnostics: [] };
     }
 
-    // builds query params — title passed as plain string, URLSearchParams handles encoding
+    // builds query params for the wingsdatabase sources-with-title endpoint.
+    // videasy double-url-encodes the title (encodeURIComponent here + a second
+    // pass by URLSearchParams at the call site), and requires enc=2 + seed.
     private buildParams(
         server: VideasyServer,
-        media: ProviderMediaObject
+        media: ProviderMediaObject,
+        seed: string
     ): Record<string, string> {
         const base: Record<string, string> = {
-            title: media.title ?? '', // no encodeURIComponent — URLSearchParams does it
+            // pre-encode once; URLSearchParams applies the second pass
+            title: encodeURIComponent(media.title ?? ''),
             mediaType: media.type === 'movie' ? 'movie' : 'tv',
             tmdbId: String(media.tmdbId),
             imdbId: media.imdbId ?? '',
             episodeId: String(media.type === 'tv' ? (media.e ?? 1) : 1),
-            seasonId: String(media.type === 'tv' ? (media.s ?? 1) : 1)
+            seasonId: String(media.type === 'tv' ? (media.s ?? 1) : 1),
+            enc: '2', // algorithm version expected by enc-dec.app/dec-videasy
+            seed
         };
 
         if (media.type === 'movie') {
@@ -233,7 +287,9 @@ export class VideasyProvider extends BaseProvider {
         const map: Record<string, string> = {
             german: 'de',
             italian: 'it',
-            french: 'fr'
+            french: 'fr',
+            spanish: 'es',
+            portuguese: 'pt'
         };
         return map[server.language] ?? 'en';
     }
@@ -243,7 +299,9 @@ export class VideasyProvider extends BaseProvider {
         const map: Record<string, string> = {
             german: 'German',
             italian: 'Italian',
-            french: 'French'
+            french: 'French',
+            spanish: 'Spanish',
+            portuguese: 'Portuguese'
         };
         return map[server.language] ?? 'English';
     }

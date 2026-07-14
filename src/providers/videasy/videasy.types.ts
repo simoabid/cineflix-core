@@ -57,4 +57,10 @@ export interface VideasyServer {
     readonly name: string;
     readonly url: string;
     readonly language?: string;
+    /**
+     * some videasy servers (e.g. vyse/hdmovie) return a language label in the
+     * source "quality" field instead of a resolution. when set, only sources
+     * whose quality matches this value (case-insensitive) are kept.
+     */
+    readonly qualityFilter?: string;
 }

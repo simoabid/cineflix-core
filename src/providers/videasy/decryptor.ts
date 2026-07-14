@@ -1,7 +1,8 @@
 // decryptor.ts
 // calls enc-dec.app to decrypt videasy's encrypted blob.
-// the blob is plain text hex returned directly from api.videasy.net.
-// enc-dec.app handles the wasm/cryptojs decryption server-side.
+// the blob is plain text hex returned directly from api.wingsdatabase.com.
+// enc-dec.app handles the wasm/cryptojs decryption server-side, but it now
+// needs the per-media `seed` (algorithm version enc=2) to decrypt correctly.
 
 const DEC_API = 'https://enc-dec.app/api/dec-videasy';
 
@@ -23,25 +24,27 @@ export interface DecryptedPayload {
 // avoids re-calling the api for the same blob within a server session
 const cache = new Map<string, DecryptedPayload>();
 
-function blobKey(tmdbId: string, blob: string): string {
+function blobKey(tmdbId: string, blob: string, seed: string): string {
     // soo i think it's better to use first 32 chars of blob as a cheap fingerprint as blobs are unique per request
-    return `${tmdbId}:${blob.slice(0, 32)}`;
+    // seed is part of the key now because videasy's payload is seed-dependent (enc=2)
+    return `${tmdbId}:${seed}:${blob.slice(0, 32)}`;
 }
 
 export async function decryptResponse(
     blob: string,
-    tmdbId: string
+    tmdbId: string,
+    seed: string
 ): Promise<DecryptedPayload | null> {
     if (!blob || blob.length < 10) return null;
 
-    const key = blobKey(tmdbId, blob);
+    const key = blobKey(tmdbId, blob, seed);
     if (cache.has(key)) return cache.get(key)!;
 
     try {
         const res = await fetch(DEC_API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: blob, id: tmdbId })
+            body: JSON.stringify({ text: blob, id: tmdbId, seed })
         });
 
         if (!res.ok) return null;
