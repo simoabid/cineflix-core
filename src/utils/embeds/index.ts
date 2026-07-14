@@ -12,5 +12,6 @@ export { resolveZunime } from './zunime.js';
 export { resolveAnimetsu } from './animetsu.js';
 export { resolveAnimekai } from './animekai.js';
 export { resolveMyanime } from './myanime.js';
+export { resolveFlixcloud } from './flixcloud.js';
 
 export type { EmbedResult, EmbedStream, EmbedSubtitle } from './filemoon.js';
