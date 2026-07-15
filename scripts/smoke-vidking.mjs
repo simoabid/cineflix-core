@@ -131,23 +131,28 @@ function firstHlsRef(manifestText, manifestUrl) {
     return null;
 }
 
-async function checkProxyPlayable(source) {
-    let url = source.url;
-    // Proxy URLs from createProxyUrl may be absolute http://localhost/... when
-    // PUBLIC_URL is unset. Rewrite to the BASE we are smoke-testing.
+/**
+ * Rewrite absolute proxy URLs onto BASE.
+ *
+ * Production servers often emit https://PUBLIC_URL/v1/proxy?... which is
+ * correct for browsers, but curl/Node smoke tests get Cloudflare "Just a
+ * moment..." challenges on that hostname. When BASE is loopback, force the
+ * probe through the local process so we test the proxy→CDN path, not CF.
+ */
+function rewriteProxyToBase(url) {
     try {
-        const u = new URL(url);
-        if (
-            u.pathname.includes('/v1/proxy') &&
-            (u.hostname === 'localhost' ||
-                u.hostname === '127.0.0.1' ||
-                u.hostname === '0.0.0.0')
-        ) {
-            url = `${BASE}${u.pathname}${u.search}`;
-        }
+        const u = new URL(url, BASE);
+        if (!u.pathname.includes('/v1/proxy')) return url;
+        const base = new URL(BASE);
+        // Always prefer BASE for smoke probes (local or public).
+        return `${base.origin}${u.pathname}${u.search}`;
     } catch {
-        /* keep as-is */
+        return url;
     }
+}
+
+async function checkProxyPlayable(source) {
+    const url = rewriteProxyToBase(source.url);
 
     const got = await fetchBytes(url);
     const type = (source.type || '').toLowerCase();
@@ -223,9 +228,11 @@ async function main() {
     // 3. TV sources
     let tvVk = [];
     try {
-        const tv = await fetchJson(`/v1/tv/${TV_ID}/${TV_S}/${TV_E}`);
+        // OMSS path is /v1/tv/:id/seasons/:s/episodes/:e (not /v1/tv/:id/:s/:e)
+        const tvPath = `/v1/tv/${TV_ID}/seasons/${TV_S}/episodes/${TV_E}`;
+        const tv = await fetchJson(tvPath);
         if (tv.status !== 200) {
-            log('tv resolve', false, `HTTP ${tv.status}`);
+            log('tv resolve', false, `HTTP ${tv.status} (${tvPath})`);
         } else {
             tvVk = collectVidkingSources(tv.body);
             log(
