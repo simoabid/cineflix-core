@@ -23,5 +23,6 @@ export const streamPatterns: RegExp[] = [
     /niceoribit\.com/, // vidup direct stream CDN
     /111movies\.net\/wyzie/, // 111movies subtitle endpoints
     /dolphin-d55\.workers\.dev/, // 111movies stream CDN (Cloudflare Workers)
-    /curly-lab-ca94\.dolphin-d55\.workers\.dev/ // 111movies stream CDN
+    /curly-lab-ca94\.dolphin-d55\.workers\.dev/, // 111movies stream CDN
+    /ironbubble\.site|ironwallnet\.net/ // vidking stream CDNs (Hydrogen / Oxygen)
 ];
