@@ -11,7 +11,7 @@
 
 - If a provider **just broke**, jump to **§8 Failure Playbook** and **§9 Decision Framework**.
 - If you're **adding a new provider**, read **§2 → §3 → §4** (the repeatable method), then copy patterns from **§7 Reusable Assets**.
-- The **§6 vidsrc case study** is the worked example that every section refers to.
+- The **§6 vidsrc** and **§6b vidking** case studies are worked examples (WASM/HMAC vs seed XOR + disguised TS).
 
 Golden rule learned the hard way: **change one variable at a time, and always
 get the *real* error before theorizing.** Most of the time we lost was from
@@ -285,6 +285,111 @@ copies `wasm/` into `dist/`.
 
 ---
 
+## 6b. Case study: vidking (what we actually found)
+
+**Site type:** Vite SPA on `www.vidking.net` (~4.8KB shell). Public docs only
+document ad‑heavy iframe embeds (`/embed/movie/{tmdbId}`,
+`/embed/tv/{tmdbId}/{s}/{e}`). **Do not scrape the iframe** — scrape the same
+API the SPA player uses.
+
+**Architecture discovered via §2 funnel (shell → `VideoPlayer-*.js`):**
+
+1. API host: `https://api.speedracelight.com`
+2. Meta host: `https://db.speedracelight.com/3` (TMDB proxy)
+3. Subtitles: `https://subs.videasy.to/search?id={imdb}` (same as site)
+4. **Five named servers** (element metaphor):
+
+| Name | Endpoint path | Notes (prod EC2) |
+|---|---|---|
+| Hydrogen | `cdn/sources-with-title` | **Playable** multi‑quality HLS; segments often disguised |
+| Oxygen | `neon2/sources-with-title` | Playlists OK; `.ts` often **HTTP 410** from DC IPs |
+| Titanium | `tejo/sources-with-title` | Often HTTP 500 |
+| Lithium | `downloader2/sources-with-title` | Often HTTP 500 |
+| Helium | `1movies/sources-with-title` | Often HTTP 404 |
+
+5. **enc=2 flow** (no WASM — pure TS):
+   - `GET /seed?mediaId={tmdb}` → `{ seed, ttlMs }` (~30s TTL, cacheable)
+   - `GET /{endpoint}?title&mediaType&year&tmdbId&imdbId&seasonId&episodeId&enc=2&seed=…`
+   - Response = base64url ciphertext; decrypt with seed + `parseInt(tmdbId)`
+   - Cipher = custom PRNG keystream XOR; plaintext must start with magic
+     **`mvm1`** (`[109,118,109,49]`) then JSON `{ sources, subtitles }`
+6. **Source shape after decrypt:**
+   - Hydrogen: quality ladder (`1080P` / `720P` / …) → `ironbubble.site/r2/cdn…/*.m3u8`
+   - Oxygen: `type: hls|dash` → `ironwallnet.net/nodash|dash/…` + child hosts on
+     `*.interkh.com` (failover `x-bc.interkh.com`, `x-cdn=` edge ids)
+
+**What we run in Node:** full reimplementation in TS (`vidkingCrypto.ts` +
+`vidkingClient.ts`). No WASM, no headless browser for resolve.
+
+**The gauntlet we cleared, in order:**
+
+1. **SPA shell** → ignore embed docs; recon `VideoPlayer-*.js`.
+2. **Seed + enc=2 decrypt** → port PRNG exactly (incl. sparse-array `in`
+   semantics). Wrong seed → `decrypt failed: bad seed or tampered payload`.
+3. **Drop DASH** → OMSS `ProxyService` only rewrites **line-based HLS**, not full
+   MPD `BaseURL` / `SegmentTemplate`. MPD returns 200 then zero segments → UI
+   “Stream Playback Error”.
+4. **Proxy must rewrite HLS** → never put whole CDN hosts in `streamPatterns`
+   (that made master `.m3u8` take the *stream* path and skip rewrite). Stream
+   only segment-like URLs; buffer playlists.
+5. **Host-without-scheme URIs** → Oxygen masters emit
+   `URI="ijzecz….interkh.com/path/index-v1.m3u8?…"`. WHATWG resolves that as a
+   *path under the master host*. Patch: only when `host.tld/path…` (requires
+   `/` after host). Early over-broad patch matched `seg-1-v1.ts` as a “host”
+   → `https://seg-1-v1.ts?…` → proxy **500**. Fixed in `proxyResolvePatch.ts`.
+6. **Oxygen segment 410** → after correct paths, nginx still returns **410 Gone**
+   for many `.ts` from datacenter IPs (playlists still 200). Probe first segment
+   in the client; **drop** sources whose segment is 410/403 so the UI doesn’t
+   list dead Oxygen streams.
+7. **Hydrogen “decoy” that isn’t** → media playlists often list
+   `/r2/cdn*/…/file000.html` (Content-Type `text/html`) but body is **real
+   MPEG-TS** (`0x47` sync every 188 bytes, hundreds of KB). Tiny stubs
+   (`bew.jpg` / `bex.html` / `bey.js`) *are* real decoys. Distinguish by
+   **size + TS sync probe**, not extension alone. Force proxy
+   `Content-Type: video/mp2t` for disguised files so hls.js demuxes them.
+8. **Referer on Hydrogen CDN** → `ironbubble.site` **403** if `Referer` is set;
+   use minimal stream headers (`User-Agent` + `Accept` only) for all VidKing
+   proxy URLs.
+9. **Your CF vs their CF** → curl to `https://core.cineflix.dev/v1/proxy` can
+   show “Just a moment…” (`cZone: core.cineflix.dev`) — that is **your** edge,
+   not VidKing. Smoke-test via `http://127.0.0.1:PORT` to prove proxy→CDN.
+10. **Why “only 2 Hydrogen” not 4** → quality ladder may have 4 API rows; probe
+    keeps only ladders whose first segment is real TS. Flaky edges (403 mid-play)
+    still happen; 0 sources on some titles is expected when every backend fails
+    validation.
+
+**Production signal (Godfather working, 2026-07 EC2):**
+
+- `VidKing returned 2 source(s)` (~2–10s with probe)
+- Proxy: `moon.ironbubble.site` m3u8 **200**, then rotating
+  `lookcrew11` / `checknews02` / `sandstorm13` / `cartlegion03` / `file*.html`
+  **200** (disguised TS) — continuous playback
+- No interkh `.ts` 410 spam when Oxygen is filtered out
+
+**Final file layout:**
+
+```
+src/providers/vidking/
+  vidking.ts           # BaseProvider, proxy wrap, ranking
+  vidkingClient.ts     # seed, multi-server, probe filter
+  vidkingCrypto.ts     # enc=2 PRNG XOR decrypt
+  vidking.types.ts
+  test.ts              # standalone; no side effects unless executed directly
+src/proxyResolvePatch.ts   # host/path URI fix + force video/mp2t
+src/streamPatterns.ts      # r2/cdn file* + interkh .ts (not whole hosts)
+scripts/smoke-vidking.mjs  # prod smoke (use BASE_URL=http://127.0.0.1:PORT)
+```
+
+**Failure refresh routine:**
+
+1. Confirm decrypt still works: seed → one server → magic `mvm1`.
+2. `curl` local proxy master; children must be `/v1/proxy?data=…` not bare hosts.
+3. First segment status: **200 + large/TS** (Hydrogen) vs **410** (Oxygen/DC).
+4. If Hydrogen 403: drop Referer; rotate quality / title.
+5. Re-download `VideoPlayer-*.js` if endpoints or enc version change.
+
+---
+
 ## 7. Reusable assets (keep these)
 
 These scripts from this build are generic — reuse for any SPA target:
@@ -359,7 +464,12 @@ never start from zero again.
 - **Soft‑block**: request accepted but served junk/empty due to a failed
   fingerprint check (vs a hard 401/403 auth error).
 - **NATO servers**: vidsrc's server aliases (`alpha`, `bravo`, …).
+- **Element servers**: vidking's Hydrogen / Oxygen / … backend aliases.
+- **Disguised TS**: MPEG‑TS bytes served as `file000.html` / `text/html` to
+  evade naive scrapers and MIME filters.
+- **enc=2**: vidking's seed‑based XOR payload format (magic `mvm1`).
 
 ---
 
-*Written from the vidsrc build. The specifics will age; the method won't.*
+*Written from the vidsrc build; §6b added from the vidking build (2026-07).
+The specifics will age; the method won't.*
