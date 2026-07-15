@@ -24,5 +24,9 @@ export const streamPatterns: RegExp[] = [
     /111movies\.net\/wyzie/, // 111movies subtitle endpoints
     /dolphin-d55\.workers\.dev/, // 111movies stream CDN (Cloudflare Workers)
     /curly-lab-ca94\.dolphin-d55\.workers\.dev/, // 111movies stream CDN
-    /ironbubble\.site|ironwallnet\.net/ // vidking stream CDNs (Hydrogen / Oxygen)
+    // VidKing: ONLY segment-like media on these hosts must stream.
+    // Matching the whole host would make master .m3u8 take the "stream" path
+    // and skip HLS rewrite → child URIs break in the player (playback error).
+    // Leave .m3u8/.mpd unlisted so the proxy buffers + rewrites them.
+    /(?:ironbubble\.site|ironwallnet\.net|interkh\.com).+\.(?:ts|m4s|mp4|key)(?:\?|$)/i
 ];

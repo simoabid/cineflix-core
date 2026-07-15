@@ -1,5 +1,8 @@
-import { OMSSServer } from '@omss/framework';
 import 'dotenv/config';
+// Must load before any proxy requests: fixes host-without-scheme HLS URIs
+// used by VidKing Oxygen (interkh.com child playlists).
+import './proxyResolvePatch.js';
+import { OMSSServer } from '@omss/framework';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { knownThirdPartyProxies } from './thirdPartyProxies.js';
