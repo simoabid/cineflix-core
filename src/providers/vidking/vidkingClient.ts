@@ -30,25 +30,27 @@ const TMDB_PROXY = 'https://db.speedracelight.com/3';
 const PAGE_ORIGIN = 'https://www.vidking.net';
 
 /**
- * Server map + order as shipped in the player (`Ti` / `Es`).
+ * Server map. Order = preference (tried in parallel, but listed best-first
+ * for diagnostics / ranking).
  *
- * Production observations (2026-07):
- *   - Hydrogen + Oxygen: reliable (HLS / multi-quality)
- *   - Titanium / Lithium: often HTTP 500
- *   - Helium: often HTTP 404
- * Dead backends stay enabled with a short fail-fast timeout so recovery is
- * automatic if the upstream comes back, without blocking the good servers.
+ * Production observations (2026-07, EC2 + browser):
+ *   - Oxygen HLS (`nodash` / ironwallnet + interkh) — real multi-audio streams
+ *   - Hydrogen HLS — sometimes real (lookcrew*.site .ts), sometimes anti-bot
+ *     decoy playlists (bew.jpg / bex.html / bey.js) that 200 but cannot play
+ *   - DASH (Oxygen .mpd) — OMSS proxy only rewrites line-based HLS, not full
+ *     MPD BaseURL/SegmentTemplate → drop DASH in mapSources
+ *   - Titanium / Lithium: often HTTP 500; Helium: often 404
  */
 export const VIDKING_SERVERS: readonly VidkingServerDef[] = [
     {
-        name: 'Hydrogen',
-        endpoint: 'cdn/sources-with-title',
+        name: 'Oxygen',
+        endpoint: 'neon2/sources-with-title',
         isActive: true,
         timeoutMs: 30_000
     },
     {
-        name: 'Oxygen',
-        endpoint: 'neon2/sources-with-title',
+        name: 'Hydrogen',
+        endpoint: 'cdn/sources-with-title',
         isActive: true,
         timeoutMs: 30_000
     },
@@ -86,6 +88,12 @@ const BROWSER_HEADERS: Record<string, string> = {
     'Sec-Fetch-Dest': 'empty',
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': 'cross-site'
+};
+
+/** Headers for probing playlists / segments (Hydrogen 403s if Referer set). */
+const STREAM_PROBE_HEADERS: Record<string, string> = {
+    'User-Agent': BROWSER_HEADERS['User-Agent'],
+    Accept: '*/*'
 };
 
 interface SeedCacheEntry {
@@ -243,14 +251,131 @@ function mapSources(
     const out: VidkingResolvedSource[] = [];
     for (const src of payload.sources) {
         if (!src?.url) continue;
+        const type = inferType(src);
+        // OMSS ProxyService rewrites line-based HLS only — not full DASH MPD
+        // (BaseURL / SegmentTemplate). Returning DASH causes silent playback
+        // failure after a 200 MPD (see pm2_core_logs: mpd 200, zero segments).
+        if (
+            type === 'dash' ||
+            src.url.includes('.mpd') ||
+            src.url.includes('/dash/')
+        ) {
+            continue;
+        }
         out.push({
             server,
             url: src.url,
             quality: normalizeQuality(src.quality),
-            type: inferType(src)
+            type
         });
     }
     return out;
+}
+
+const DECOY_EXT = /\.(?:jpg|jpeg|png|gif|webp|html?|js|css|svg|ico)(?:\?|$)/i;
+const MEDIA_EXT = /\.(?:ts|m4s|m4a|mp4|aac|cmfv|cmfa)(?:\?|$)/i;
+const NESTED_M3U8 = /\.m3u8(?:\?|$)/i;
+
+/**
+ * Collect playlist references (URI="..." attrs + non-comment body lines).
+ */
+function playlistRefs(text: string): string[] {
+    const refs: string[] = [];
+    for (const m of text.matchAll(/URI\s*=\s*["']([^"']+)["']/gi)) {
+        refs.push(m[1]);
+    }
+    for (const line of text.split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) continue;
+        refs.push(t);
+    }
+    return refs;
+}
+
+/**
+ * True if an HLS playlist looks like real video (not anti-bot decoy).
+ *
+ * Hydrogen sometimes serves index.m3u8 whose only "segments" are
+ * bew.jpg / bex.html / bey.js — HTTP 200 but unplayable (pm2 logs).
+ */
+function looksLikePlayableHls(text: string): boolean {
+    if (!text.includes('#EXTM3U')) return false;
+    const refs = playlistRefs(text);
+    if (refs.length === 0) return false;
+
+    const hasMedia = refs.some((r) => MEDIA_EXT.test(r));
+    const hasNested = refs.some((r) => NESTED_M3U8.test(r));
+    const decoyCount = refs.filter((r) => DECOY_EXT.test(r)).length;
+
+    // Pure decoy media playlist
+    if (decoyCount > 0 && !hasMedia && !hasNested) return false;
+    // Decoy majority with no real media
+    if (decoyCount >= 2 && !hasMedia) return false;
+
+    return hasMedia || hasNested;
+}
+
+/**
+ * Probe a candidate stream URL; drop decoy / empty playlists.
+ * Non-HLS (mp4) is accepted after a cheap HEAD/GET status check.
+ */
+async function filterPlayableSources(
+    sources: VidkingResolvedSource[],
+    diagnostics: string[],
+    timeoutMs = 12_000
+): Promise<VidkingResolvedSource[]> {
+    if (sources.length === 0) return sources;
+
+    const checked = await Promise.all(
+        sources.map(async (src) => {
+            try {
+                if (
+                    src.type === 'mp4' ||
+                    (src.url.includes('.mp4') && !src.url.includes('m3u8'))
+                ) {
+                    const res = await fetch(src.url, {
+                        method: 'HEAD',
+                        headers: STREAM_PROBE_HEADERS,
+                        signal: AbortSignal.timeout(timeoutMs)
+                    });
+                    if (res.ok || res.status === 405 || res.status === 403) {
+                        // 403 HEAD can still play with GET+headers via proxy; keep.
+                        // Prefer GET range for soft check when HEAD not allowed.
+                        return src;
+                    }
+                    diagnostics.push(
+                        `${src.server}/${src.quality}: mp4 HEAD ${res.status}`
+                    );
+                    return null;
+                }
+
+                const res = await fetch(src.url, {
+                    headers: STREAM_PROBE_HEADERS,
+                    signal: AbortSignal.timeout(timeoutMs)
+                });
+                if (!res.ok) {
+                    diagnostics.push(
+                        `${src.server}/${src.quality}: playlist HTTP ${res.status}`
+                    );
+                    return null;
+                }
+                const text = await res.text();
+                if (!looksLikePlayableHls(text)) {
+                    diagnostics.push(
+                        `${src.server}/${src.quality}: decoy/empty playlist (skipped)`
+                    );
+                    return null;
+                }
+                return src;
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : 'probe failed';
+                diagnostics.push(`${src.server}/${src.quality}: ${msg}`);
+                return null;
+            }
+        })
+    );
+
+    return checked.filter((s): s is VidkingResolvedSource => s != null);
 }
 
 class SeedRejectedError extends Error {
@@ -396,7 +521,7 @@ export async function resolveVidking(
         }
     });
 
-    const sources: VidkingResolvedSource[] = [];
+    const rawSources: VidkingResolvedSource[] = [];
     const inlineSubtitles: VidkingApiSubtitle[] = [];
     const seenUrls = new Set<string>();
     const seenSubUrls = new Set<string>();
@@ -406,7 +531,7 @@ export async function resolveVidking(
         for (const src of item.sources) {
             if (seenUrls.has(src.url)) continue;
             seenUrls.add(src.url);
-            sources.push(src);
+            rawSources.push(src);
         }
         for (const sub of item.subtitles) {
             if (!sub?.url || seenSubUrls.has(sub.url)) continue;
@@ -414,6 +539,9 @@ export async function resolveVidking(
             inlineSubtitles.push(sub);
         }
     }
+
+    // Drop anti-bot decoy Hydrogen playlists before they reach the player.
+    const sources = await filterPlayableSources(rawSources, diagnostics);
 
     return {
         sources,

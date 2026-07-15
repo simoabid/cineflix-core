@@ -94,12 +94,11 @@ export class VidkingProvider extends BaseProvider {
                 `Resolved ${resolved.sources.length} stream(s) across servers`
             );
 
-            // Prefer HLS over DASH when both exist for the same server+quality
-            // (player's `sl()` does the opposite — we optimize for OMSS clients).
+            // Client already drops DASH + decoy playlists. Rank Oxygen HLS first.
             const ranked = this.rankSources(resolved.sources);
 
             const sources: Source[] = ranked.map((s) => ({
-                url: this.createProxyUrl(s.url, this.streamHeadersFor(s.url)),
+                url: this.createProxyUrl(s.url, this.STREAM_HEADERS),
                 type: this.toSourceType(s.type, s.url),
                 quality: s.quality,
                 audioTracks: [{ language: 'eng', label: 'English' }],
@@ -132,29 +131,26 @@ export class VidkingProvider extends BaseProvider {
         }
     }
 
-    /**
-     * Hydrogen CDN forbids Referer; others are fine with bare UA.
-     */
-    private streamHeadersFor(url: string): Record<string, string> {
-        if (/ironbubble\.site/i.test(url)) {
-            return this.STREAM_HEADERS;
-        }
-        // Ironwall / other hosts accept vidking referer; still prefer minimal
-        // headers for maximum compatibility through the proxy.
-        return this.STREAM_HEADERS;
-    }
-
     private rankSources<
         T extends { type: string; url: string; quality: string; server: string }
     >(sources: T[]): T[] {
-        const score = (s: T): number => {
+        const serverRank = (name: string): number => {
+            const n = name.toLowerCase();
+            if (n === 'oxygen') return 0;
+            if (n === 'hydrogen') return 1;
+            return 2;
+        };
+        const typeRank = (s: T): number => {
             const t = s.type.toLowerCase();
             if (t === 'hls' || s.url.includes('.m3u8')) return 0;
             if (t === 'mp4' || s.url.includes('.mp4')) return 1;
-            if (t === 'dash' || s.url.includes('.mpd')) return 2;
-            return 3;
+            return 2;
         };
-        return [...sources].sort((a, b) => score(a) - score(b));
+        return [...sources].sort((a, b) => {
+            const sr = serverRank(a.server) - serverRank(b.server);
+            if (sr !== 0) return sr;
+            return typeRank(a) - typeRank(b);
+        });
     }
 
     private toSourceType(type: string, url: string): SourceType {
