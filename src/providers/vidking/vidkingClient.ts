@@ -272,9 +272,12 @@ function mapSources(
     return out;
 }
 
-const DECOY_EXT = /\.(?:jpg|jpeg|png|gif|webp|html?|js|css|svg|ico)(?:\?|$)/i;
 const MEDIA_EXT = /\.(?:ts|m4s|m4a|mp4|aac|cmfv|cmfa)(?:\?|$)/i;
 const NESTED_M3U8 = /\.m3u8(?:\?|$)/i;
+/** Hydrogen disguises real MPEG-TS as file000.html / file001.jpg under /r2/cdn. */
+const DISGUISED_SEG =
+    /\/r2\/cdn\d*\/.+\/file\d+\.(?:html?|jpg|jpeg|png|js)(?:\?|$)/i;
+const TINY_DECOY_NAME = /\/(?:bew|bex|bey)\.(?:jpg|html?|js)(?:\?|$)/i;
 
 /**
  * Collect playlist references (URI="..." attrs + non-comment body lines).
@@ -292,11 +295,19 @@ function playlistRefs(text: string): string[] {
     return refs;
 }
 
+function absRef(baseUrl: string, rel: string): string {
+    const t = rel.trim();
+    if (t.startsWith('http://') || t.startsWith('https://')) return t;
+    if (t.startsWith('//')) return `https:${t}`;
+    if (/^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}\//.test(t)) {
+        return `https://${t}`;
+    }
+    return new URL(t, baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1)).href;
+}
+
 /**
- * True if an HLS playlist looks like real video (not anti-bot decoy).
- *
- * Hydrogen sometimes serves index.m3u8 whose only "segments" are
- * bew.jpg / bex.html / bey.js — HTTP 200 but unplayable (pm2 logs).
+ * Structural check only — Hydrogen "disguised" segments look like .html.
+ * Real playability is confirmed by probing the first segment body.
  */
 function looksLikePlayableHls(text: string): boolean {
     if (!text.includes('#EXTM3U')) return false;
@@ -305,19 +316,34 @@ function looksLikePlayableHls(text: string): boolean {
 
     const hasMedia = refs.some((r) => MEDIA_EXT.test(r));
     const hasNested = refs.some((r) => NESTED_M3U8.test(r));
-    const decoyCount = refs.filter((r) => DECOY_EXT.test(r)).length;
+    const hasDisguised = refs.some((r) => DISGUISED_SEG.test(r));
+    // Tiny anti-bot stubs (bew.jpg / bex.html) without real media
+    const onlyTinyDecoy =
+        refs.length > 0 &&
+        refs.every((r) => TINY_DECOY_NAME.test(r)) &&
+        !hasMedia &&
+        !hasNested &&
+        !hasDisguised;
+    if (onlyTinyDecoy) return false;
 
-    // Pure decoy media playlist
-    if (decoyCount > 0 && !hasMedia && !hasNested) return false;
-    // Decoy majority with no real media
-    if (decoyCount >= 2 && !hasMedia) return false;
+    return hasMedia || hasNested || hasDisguised || refs.length >= 1;
+}
 
-    return hasMedia || hasNested;
+function isMpegTs(buf: Uint8Array): boolean {
+    if (buf.length < 188) return false;
+    let sync = 0;
+    const limit = Math.min(buf.length, 188 * 10);
+    for (let i = 0; i < limit; i += 188) {
+        if (buf[i] === 0x47) sync++;
+    }
+    return sync >= 3;
 }
 
 /**
- * Probe a candidate stream URL; drop decoy / empty playlists.
- * Non-HLS (mp4) is accepted after a cheap HEAD/GET status check.
+ * Probe playlist + first segment. Drops:
+ *  - Oxygen interkh segments that return HTTP 410 (CDN gone)
+ *  - Tiny decoy playlists
+ * Keeps Hydrogen streams whose "file000.html" bodies are real MPEG-TS.
  */
 async function filterPlayableSources(
     sources: VidkingResolvedSource[],
@@ -338,11 +364,7 @@ async function filterPlayableSources(
                         headers: STREAM_PROBE_HEADERS,
                         signal: AbortSignal.timeout(timeoutMs)
                     });
-                    if (res.ok || res.status === 405 || res.status === 403) {
-                        // 403 HEAD can still play with GET+headers via proxy; keep.
-                        // Prefer GET range for soft check when HEAD not allowed.
-                        return src;
-                    }
+                    if (res.ok || res.status === 405) return src;
                     diagnostics.push(
                         `${src.server}/${src.quality}: mp4 HEAD ${res.status}`
                     );
@@ -362,11 +384,94 @@ async function filterPlayableSources(
                 const text = await res.text();
                 if (!looksLikePlayableHls(text)) {
                     diagnostics.push(
-                        `${src.server}/${src.quality}: decoy/empty playlist (skipped)`
+                        `${src.server}/${src.quality}: empty/decoy playlist (skipped)`
                     );
                     return null;
                 }
-                return src;
+
+                // Resolve first media line / nested playlist and probe body.
+                const refs = playlistRefs(text);
+                const firstRef =
+                    refs.find(
+                        (r) => MEDIA_EXT.test(r) || DISGUISED_SEG.test(r)
+                    ) ??
+                    refs.find((r) => NESTED_M3U8.test(r)) ??
+                    refs[0];
+                if (!firstRef) return null;
+
+                const firstUrl = absRef(src.url, firstRef);
+                const segRes = await fetch(firstUrl, {
+                    headers: STREAM_PROBE_HEADERS,
+                    signal: AbortSignal.timeout(timeoutMs)
+                });
+
+                // Nested master/quality m3u8: recurse one level for a real segment
+                if (
+                    segRes.ok &&
+                    (NESTED_M3U8.test(firstUrl) ||
+                        (segRes.headers.get('content-type') || '').includes(
+                            'mpegurl'
+                        ))
+                ) {
+                    const nested = await segRes.text();
+                    if (!nested.includes('#EXTM3U')) {
+                        diagnostics.push(
+                            `${src.server}/${src.quality}: nested not HLS`
+                        );
+                        return null;
+                    }
+                    const nestedRefs = playlistRefs(nested);
+                    const segRef =
+                        nestedRefs.find(
+                            (r) => MEDIA_EXT.test(r) || DISGUISED_SEG.test(r)
+                        ) ?? nestedRefs[0];
+                    if (!segRef) {
+                        diagnostics.push(
+                            `${src.server}/${src.quality}: nested empty`
+                        );
+                        return null;
+                    }
+                    const segUrl = absRef(firstUrl, segRef);
+                    const bodyRes = await fetch(segUrl, {
+                        headers: STREAM_PROBE_HEADERS,
+                        signal: AbortSignal.timeout(timeoutMs)
+                    });
+                    if (!bodyRes.ok) {
+                        diagnostics.push(
+                            `${src.server}/${src.quality}: segment HTTP ${bodyRes.status}`
+                        );
+                        return null;
+                    }
+                    const buf = new Uint8Array(await bodyRes.arrayBuffer());
+                    if (buf.length < 10_000 && !isMpegTs(buf)) {
+                        diagnostics.push(
+                            `${src.server}/${src.quality}: tiny non-TS segment (${buf.length}B)`
+                        );
+                        return null;
+                    }
+                    // Accept large bodies or MPEG-TS sync even with .html type
+                    if (buf.length >= 50_000 || isMpegTs(buf)) return src;
+                    diagnostics.push(
+                        `${src.server}/${src.quality}: segment not media-like`
+                    );
+                    return null;
+                }
+
+                if (!segRes.ok) {
+                    // Oxygen interkh currently answers 410 Gone for .ts from
+                    // datacenter IPs (pm2_core_logs_v3). Do not surface those.
+                    diagnostics.push(
+                        `${src.server}/${src.quality}: segment HTTP ${segRes.status}`
+                    );
+                    return null;
+                }
+
+                const buf = new Uint8Array(await segRes.arrayBuffer());
+                if (buf.length >= 50_000 || isMpegTs(buf)) return src;
+                diagnostics.push(
+                    `${src.server}/${src.quality}: segment too small/non-TS (${buf.length}B)`
+                );
+                return null;
             } catch (err) {
                 const msg = err instanceof Error ? err.message : 'probe failed';
                 diagnostics.push(`${src.server}/${src.quality}: ${msg}`);
