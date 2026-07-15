@@ -1,18 +1,25 @@
 /**
  * Patch @omss/framework ProxyService URL resolution.
  *
- * VidKing (and some other CDNs) emit HLS URI attributes without a scheme:
+ * VidKing Oxygen masters emit some HLS URI attributes without a scheme:
  *   URI="ijzeczcdbzbhe.interkh.com/path/index.m3u8?key=..."
  *
- * The WHATWG URL resolver treats that as a *relative path* under the master
- * playlist host, which is wrong. The site's player treats host-looking
- * relative URIs as `https://host/...`. We mirror that here so rewritten
- * proxy URLs point at the real CDN.
+ * The WHATWG resolver treats that as a relative path under the master host.
+ * The site's player treats "hostname/path..." as https://hostname/path...
+ *
+ * CRITICAL: do NOT match bare media filenames like `seg-1-v1.ts?key=...`.
+ * Those must stay relative to the playlist directory. The old regex treated
+ * `.ts` as a TLD and produced `https://seg-1-v1.ts?key=...` → proxy HTTP 500
+ * (see pm2_core_logs_v2).
  */
 import { ProxyService } from '@omss/framework';
 
-/** host.tld/... or host.tld?query — no scheme, no leading slash */
-const HOST_RELATIVE = /^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}(?:[/?#]|$)/;
+/**
+ * host.tld/path... only — requires a slash after the host so that
+ * `seg-1-v1.ts` / `playlist.m3u8` are NOT treated as hostnames.
+ */
+const HOST_THEN_PATH =
+    /^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+\/.+/;
 
 type ResolveUrlFn = (baseUrl: string, targetUrl: string) => string;
 
@@ -30,7 +37,7 @@ if (typeof originalResolveUrl === 'function') {
     ): string {
         const trimmed = targetUrl.trim();
         if (
-            HOST_RELATIVE.test(trimmed) &&
+            HOST_THEN_PATH.test(trimmed) &&
             !trimmed.startsWith('http://') &&
             !trimmed.startsWith('https://') &&
             !trimmed.startsWith('//') &&
