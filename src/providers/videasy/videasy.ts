@@ -6,6 +6,7 @@ import type {
 } from '@omss/framework';
 import type { VideasyServer } from './videasy.types.js';
 import { decryptResponse } from './decryptor.js';
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
 
 /**
  * videasy migrated its backend to api.wingsdatabase.com and now requires a
@@ -93,14 +94,15 @@ export class VideasyProvider extends BaseProvider {
     ): Promise<ProviderResult> {
         // videasy now gates every request behind a per-media seed. fetch it once
         // and reuse it across all servers + the enc-dec.app decrypt call.
-        const seed = await this.fetchSeed(String(media.tmdbId));
+        const seedResult = await this.fetchSeed(String(media.tmdbId));
 
-        if (!seed) {
+        if (!seedResult.ok) {
             return this.emptyResult(
-                'could not obtain videasy seed (api.wingsdatabase.com/seed)',
+                `could not obtain videasy seed (api.wingsdatabase.com/seed): ${seedResult.error}`,
                 media
             );
         }
+        const seed = seedResult.seed;
 
         const results = await Promise.allSettled(
             VIDEASY_SERVERS.map((server) =>
@@ -148,18 +150,32 @@ export class VideasyProvider extends BaseProvider {
     // while the capital indicates that the response might be short not enough, hope it helps.
 
     // fetches videasy's per-media seed from api.wingsdatabase.com.
-    // returns null on any failure so the caller can bail out cleanly.
-    private async fetchSeed(tmdbId: string): Promise<string | null> {
+    private async fetchSeed(
+        tmdbId: string
+    ): Promise<{ ok: true; seed: string } | { ok: false; error: string }> {
         try {
-            const res = await fetch(
+            // Option B: wingsdatabase seed fails direct from AWS (~20–30ms empty).
+            const res = await scrapeFetch(
                 `${this.BASE_URL}/seed?mediaId=${encodeURIComponent(tmdbId)}`,
-                { headers: this.HEADERS }
+                {
+                    headers: this.HEADERS,
+                    timeoutMs: 15_000,
+                    viaProxy: true
+                }
             );
-            if (!res.ok) return null;
+            if (!res.ok) {
+                return { ok: false, error: `HTTP ${res.status}` };
+            }
             const json = (await res.json()) as { seed?: string | number };
-            return json?.seed != null ? String(json.seed) : null;
-        } catch {
-            return null;
+            if (json?.seed == null) {
+                return { ok: false, error: 'missing seed field' };
+            }
+            return { ok: true, seed: String(json.seed) };
+        } catch (err) {
+            return {
+                ok: false,
+                error: err instanceof Error ? err.message : 'fetch failed'
+            };
         }
     }
 
@@ -171,7 +187,11 @@ export class VideasyProvider extends BaseProvider {
     ): Promise<ProviderResult | null> {
         const params = this.buildParams(server, media, seed);
         const url = `${server.url}?${new URLSearchParams(params as Record<string, string>)}`;
-        const response = await fetch(url, { headers: this.HEADERS });
+        const response = await scrapeFetch(url, {
+            headers: this.HEADERS,
+            timeoutMs: 25_000,
+            viaProxy: true
+        });
 
         if (!response.ok) {
             return this.emptyResult('invalid response', media);
@@ -326,9 +346,10 @@ export class VideasyProvider extends BaseProvider {
 
     async healthCheck(): Promise<boolean> {
         try {
-            const res = await fetch(this.BASE_URL, {
-                method: 'HEAD',
-                headers: this.HEADERS
+            const res = await scrapeFetch(`${this.BASE_URL}/seed?mediaId=155`, {
+                headers: this.HEADERS,
+                timeoutMs: 10_000,
+                viaProxy: true
             });
             return res.status < 500;
         } catch {

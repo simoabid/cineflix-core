@@ -13,6 +13,7 @@ import type {
     VidcoreServer,
     VidcoreTrack
 } from './vidcore.types.js';
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
 
 /**
  * VidCore (vidcore.net)
@@ -149,7 +150,7 @@ export class VidcoreProvider extends BaseProvider {
         }
     }
 
-    // 1. loads the player page and scrapes the escaped `\"en\":\"...\"` token.
+    // 1. loads the player page and scrapes the `en` token (multiple HTML shapes).
     private async fetchPageToken(
         media: ProviderMediaObject
     ): Promise<string | null> {
@@ -160,17 +161,32 @@ export class VidcoreProvider extends BaseProvider {
                 ? `${this.BASE_URL}/movie/${media.tmdbId}`
                 : `${this.BASE_URL}/tv/${media.tmdbId}/${media.s ?? 1}/${media.e ?? 1}`;
 
-        const res = await fetch(pageUrl, {
+        // Option B: page HTML often empty/WAF from AWS without residential egress.
+        const res = await scrapeFetch(pageUrl, {
             headers: this.HEADERS,
-            signal: AbortSignal.timeout(this.TIMEOUT_MS)
+            timeoutMs: this.TIMEOUT_MS,
+            viaProxy: true
         });
         if (!res.ok) return null;
 
         const html = await res.text();
+        return this.extractPageToken(html);
+    }
 
-        // the token is embedded as escaped json in the html: \"en\":\"<token>\"
-        const match = html.match(/\\"en\\":\\"(.*?)\\"/);
-        return match?.[1] ?? null;
+    /**
+     * Token appears as escaped JSON in the RSC/HTML payload:
+     *   \"en\":\"<token>\"
+     * Use non-greedy `.*?` — a `[^"\\]|\\.` class wrongly consumes the
+     * closing `\"` (backslash + quote) as an escape sequence.
+     */
+    private extractPageToken(html: string): string | null {
+        const primary = html.match(/\\"en\\":\\"(.*?)\\"/);
+        if (primary?.[1] && primary[1].length >= 16) return primary[1];
+
+        const plain = html.match(/"en"\s*:\s*"([A-Za-z0-9+/=._-]{16,})"/);
+        if (plain?.[1]) return plain[1];
+
+        return null;
     }
 
     // 2. GET enc-vidcore -> { servers, stream, token }.
@@ -178,8 +194,9 @@ export class VidcoreProvider extends BaseProvider {
         pageToken: string
     ): Promise<VidcoreHandshake | null> {
         const url = `${this.API_BASE}/enc-vidcore?text=${encodeURIComponent(pageToken)}`;
-        const res = await fetch(url, {
-            signal: AbortSignal.timeout(this.TIMEOUT_MS)
+        const res = await scrapeFetch(url, {
+            timeoutMs: this.TIMEOUT_MS,
+            viaProxy: true
         });
         if (!res.ok) return null;
 
@@ -237,10 +254,11 @@ export class VidcoreProvider extends BaseProvider {
         url: string,
         token: string
     ): Promise<string | null> {
-        const res = await fetch(url, {
+        const res = await scrapeFetch(url, {
             method: 'POST',
             headers: { ...this.HEADERS, 'X-CSRF-Token': token },
-            signal: AbortSignal.timeout(this.TIMEOUT_MS)
+            timeoutMs: this.TIMEOUT_MS,
+            viaProxy: true
         });
         if (!res.ok) return null;
         const text = await res.text();
@@ -249,11 +267,12 @@ export class VidcoreProvider extends BaseProvider {
 
     // POST enc-dec.app/api/dec-vidcore and unwrap the result envelope.
     private async decVidcore<T>(encrypted: string): Promise<T | null> {
-        const res = await fetch(`${this.API_BASE}/dec-vidcore`, {
+        const res = await scrapeFetch(`${this.API_BASE}/dec-vidcore`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: encrypted }),
-            signal: AbortSignal.timeout(this.TIMEOUT_MS)
+            timeoutMs: this.TIMEOUT_MS,
+            viaProxy: true
         });
         if (!res.ok) return null;
 
@@ -423,10 +442,11 @@ export class VidcoreProvider extends BaseProvider {
 
     async healthCheck(): Promise<boolean> {
         try {
-            const res = await fetch(this.BASE_URL, {
+            const res = await scrapeFetch(this.BASE_URL, {
                 method: 'HEAD',
                 headers: this.HEADERS,
-                signal: AbortSignal.timeout(this.TIMEOUT_MS)
+                timeoutMs: this.TIMEOUT_MS,
+                viaProxy: true
             });
             return res.status < 500;
         } catch {

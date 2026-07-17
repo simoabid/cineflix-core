@@ -35,24 +35,24 @@ import type {
  *      pointed at enc-dec.app/api/dec-kisskh?url=<src>, which returns the
  *      decrypted subtitle text on GET.
  *
- * STATUS (2026-07-10): CONFIRMED WORKING live via kisskh_trace.py - the full
- * enc-dec flow (steps 3-5) returns a real hls url and dec-kisskh yields
- * readable subtitle text. The trace also exposed two resolver issues, now
- * fixed: (a) KissKH splits seasons into separate "<Title> Season <N>" entries,
- * so pickDrama is season-aware (media.s) and never blindly takes the first hit
- * (which had matched "Train to Busan" -> a "...Mugen Train Arc" anime); no
- * confident match now returns null (clean empty result) rather than a wrong
- * stream. (b) Subs are "<name>.<ext>.txt1" and decrypt to their real <ext>
- * (observed SRT), so detectSubtitleFormat reads the inner extension, not the
- * .txt1 encryption suffix. Only Asian content resolves (most western tmdb
- * titles won't be found -> clean empty result). ENABLED; every failure path
- * returns an empty result, never a broken stream. NOTE: KissKH rotates
- * domains; if it moves off kisskh.do, update BASE_URL.
+ * STATUS (2026-07-10): Flow CONFIRMED WORKING live via kisskh_trace.py for
+ * Asian titles (full enc-dec → HLS + dec-kisskh subs). pickDrama is season-aware;
+ * no confident match returns null (never a wrong stream).
+ *
+ * STATUS (2026-07-17): DISABLED — catalog domain, not egress / not proxy.
+ *
+ * KissKH is Asian drama/movie/anime keyed by its own search, not TMDB.
+ * EC2 test-all fixtures ("The Dark Knight", "Game of Thrones" S1E1) correctly
+ * return EMPTY_CATALOG (`no kisskh match for …`). Do not chase residential
+ * proxy or western-title remapping. Re-enable only if Core exposes a dedicated
+ * Asian-catalog path or fixtures that match KissKH's library.
+ *
+ * NOTE: KissKH rotates domains; if it moves off kisskh.do, update BASE_URL.
  */
 export class KisskhProvider extends BaseProvider {
     readonly id = 'kisskh';
     readonly name = 'KissKH';
-    readonly enabled = true;
+    readonly enabled = false;
     readonly BASE_URL = 'https://kisskh.do';
     readonly API_BASE = 'https://enc-dec.app/api';
     readonly HEADERS: Record<string, string> = {

@@ -13,14 +13,20 @@ import type {
 } from './peachify.types.js';
 import decrypt from './decrypt.js';
 import { generateRandomUserAgent } from '../../utils/ua.js';
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
 
 export class PeachifyProvider extends BaseProvider {
     readonly id = 'Peachify';
     readonly name = 'Peachify';
     readonly enabled = true;
     readonly BASE_URL = 'https://peachify.top';
-    readonly MOVIEBOX_URL = 'https://uwu.eat-peach.sbs';
+    /** Primary API host (holly/air/multi) — live 2026-07. */
     readonly API_URL = 'https://usa.eat-peach.sbs';
+    /**
+     * Legacy uwu host often times out; kept last as optional fan-out only.
+     * Prefer usa.eat-peach.sbs which returns AES-GCM encrypted payloads.
+     */
+    readonly MOVIEBOX_URL = 'https://uwu.eat-peach.sbs';
     readonly HEADERS = {
         'User-Agent': '',
         Accept: 'application/json, text/javascript, */*; q=0.01',
@@ -29,14 +35,17 @@ export class PeachifyProvider extends BaseProvider {
         Origin: this.BASE_URL
     };
 
+    /** Fast hosts first; hanging uwu endpoints last with short timeout. */
     readonly PEACHIFY_SERVERS = [
-        `${this.MOVIEBOX_URL}/moviebox`,
         `${this.API_URL}/holly`,
         `${this.API_URL}/air`,
         `${this.API_URL}/multi`,
+        `${this.MOVIEBOX_URL}/moviebox`,
         `${this.MOVIEBOX_URL}/net`,
         `${this.MOVIEBOX_URL}/bmb`
     ];
+
+    private readonly REQUEST_TIMEOUT_MS = 12_000;
 
     readonly capabilities: ProviderCapabilities = {
         supportedContentTypes: ['movies', 'tv']
@@ -59,28 +68,51 @@ export class PeachifyProvider extends BaseProvider {
     private async getSources(
         media: ProviderMediaObject
     ): Promise<ProviderResult> {
-        this.HEADERS['User-Agent'] = generateRandomUserAgent();
+        // Immutable headers per request (no shared-object mutation).
+        const headers: Record<string, string> = {
+            ...this.HEADERS,
+            'User-Agent': generateRandomUserAgent()
+        };
 
         const results = await Promise.allSettled(
             this.PEACHIFY_SERVERS.map((server) =>
-                this.fetchFromServer(server, media)
+                this.fetchFromServer(server, media, headers)
             )
         );
 
         const sources: ProviderResult['sources'] = [];
         const subtitles: ProviderResult['subtitles'] = [];
         const diagnostics: ProviderResult['diagnostics'] = [];
+        const failNotes: string[] = [];
 
         let failCount = 0;
 
-        for (const result of results) {
+        for (let i = 0; i < results.length; i++) {
+            const result = results[i]!;
+            const server = this.PEACHIFY_SERVERS[i]!;
             if (result.status === 'rejected') {
                 failCount++;
+                failNotes.push(
+                    `${new URL(server).pathname}: ${
+                        result.reason instanceof Error
+                            ? result.reason.message
+                            : 'rejected'
+                    }`
+                );
                 continue;
             }
 
             if (!result.value) {
                 failCount++;
+                failNotes.push(`${new URL(server).pathname}: empty`);
+                continue;
+            }
+
+            if (result.value.error) {
+                failCount++;
+                failNotes.push(
+                    `${new URL(server).pathname}: ${result.value.error}`
+                );
                 continue;
             }
 
@@ -98,8 +130,12 @@ export class PeachifyProvider extends BaseProvider {
         }
 
         if (sources.length === 0) {
+            const detail =
+                failNotes.length > 0
+                    ? failNotes.slice(0, 4).join('; ')
+                    : 'no detail';
             return this.emptyResult(
-                'all peachify servers returned no sources',
+                `all peachify servers returned no sources (${detail})`,
                 media
             );
         }
@@ -113,21 +149,53 @@ export class PeachifyProvider extends BaseProvider {
      */
     private async fetchFromServer(
         serverBase: string,
-        media: ProviderMediaObject
-    ): Promise<ProviderResult | null> {
+        media: ProviderMediaObject,
+        headers: Record<string, string>
+    ): Promise<
+        | (ProviderResult & { error?: undefined })
+        | { sources: []; subtitles: []; diagnostics: []; error: string }
+        | null
+    > {
         const apiUrl = this.buildApiUrl(serverBase, media);
         const serverName = new URL(serverBase).hostname;
 
-        const response = await fetch(apiUrl, { headers: this.HEADERS });
+        // Option B: eat-peach.sbs often empty/blocked from AWS; route via egress.
+        let response: Response;
+        try {
+            response = await scrapeFetch(apiUrl, {
+                headers,
+                timeoutMs: this.REQUEST_TIMEOUT_MS,
+                viaProxy: true
+            });
+        } catch (err) {
+            return {
+                sources: [],
+                subtitles: [],
+                diagnostics: [],
+                error: err instanceof Error ? err.message : 'fetch failed'
+            };
+        }
 
-        if (!response.ok) return null;
+        if (!response.ok) {
+            return {
+                sources: [],
+                subtitles: [],
+                diagnostics: [],
+                error: `HTTP ${response.status}`
+            };
+        }
 
         let body = (await response.json()) as PeachifyApiResponse;
 
         if (body.isEncrypted && body.data) {
             const decrypted = await decrypt(body.data);
             if (!decrypted) {
-                return null;
+                return {
+                    sources: [],
+                    subtitles: [],
+                    diagnostics: [],
+                    error: 'decrypt failed (key/format)'
+                };
             }
             body = decrypted;
         }
@@ -136,7 +204,14 @@ export class PeachifyProvider extends BaseProvider {
             ? body.subtitles
             : [];
 
-        if (rawSources.length === 0) return null;
+        if (rawSources.length === 0) {
+            return {
+                sources: [],
+                subtitles: [],
+                diagnostics: [],
+                error: 'no sources in payload'
+            };
+        }
 
         const parsed = rawSources
             .map((s) => this.parseSource(s, serverName))
@@ -146,8 +221,17 @@ export class PeachifyProvider extends BaseProvider {
             .map((s) => this.parseSubtitle(s, serverName))
             .filter((s): s is PeachifyParsedSubtitle => s !== null);
 
+        if (parsed.length === 0) {
+            return {
+                sources: [],
+                subtitles: [],
+                diagnostics: [],
+                error: 'sources unparseable'
+            };
+        }
+
         const sources: ProviderResult['sources'] = parsed.map((s) => ({
-            url: this.createProxyUrl(s.url, s.headers ?? this.HEADERS),
+            url: this.createProxyUrl(s.url, s.headers ?? headers),
             type: s.type,
             quality: s.quality?.toString() ?? 'Auto',
             audioTracks: [
@@ -163,7 +247,7 @@ export class PeachifyProvider extends BaseProvider {
         }));
 
         const subtitles: ProviderResult['subtitles'] = parsedSubs.map((s) => ({
-            url: this.createProxyUrl(s.url, this.HEADERS),
+            url: this.createProxyUrl(s.url, headers),
             label: s.label,
             format: 'vtt'
         }));
@@ -377,9 +461,14 @@ export class PeachifyProvider extends BaseProvider {
 
     async healthCheck(): Promise<boolean> {
         try {
-            const res = await fetch(this.BASE_URL, {
+            const res = await scrapeFetch(this.BASE_URL, {
                 method: 'HEAD',
-                headers: this.HEADERS
+                headers: {
+                    ...this.HEADERS,
+                    'User-Agent': generateRandomUserAgent()
+                },
+                timeoutMs: 8_000,
+                viaProxy: true
             });
             return res.status === 200;
         } catch {

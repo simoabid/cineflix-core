@@ -18,7 +18,18 @@ import {
 export class FullhdfilmizleProvider extends BaseProvider {
     readonly id = 'fullhdfilmizle';
     readonly name = 'FullHDFilmizle (Turkish)';
-    readonly enabled = true;
+    /**
+     * STATUS (2026-07-17): DISABLED — catalog / product-fit, not egress.
+     *
+     * FullHDFilmizle is a Turkish-language catalog (fullhdfilmizlesene.tv).
+     * EC2 diagnostic test-all (Dark Knight / GoT fixtures) returns EMPTY_CATALOG
+     * ("Media not found"). Even when autocomplete finds a hit (e.g. laptop IMDb
+     * lookup → "Batman 2 Kara Şövalye"), the catalog is not a reliable western
+     * TMDB-first source for CinePro Core. Per product decision: do not chase
+     * residential proxy or fixture remapping; leave disabled until someone
+     * deliberately scopes a Turkish-title suite.
+     */
+    readonly enabled = false;
     readonly BASE_URL = 'https://www.fullhdfilmizlesene.tv';
     readonly HEADERS = {
         Referer: 'https://www.fullhdfilmizlesene.tv',

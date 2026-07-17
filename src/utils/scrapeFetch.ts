@@ -54,7 +54,13 @@ const DEFAULT_PROXY_HOST_SUFFIXES = [
     'vidlove.cc',
     // Borderline seed/token hosts that fail fast on EC2
     'wingsdatabase.com',
-    'videasy.to'
+    'videasy.to',
+    // Peachify API hosts (encrypted AES-GCM sources)
+    'peachify.top',
+    'eat-peach.sbs',
+    // VidCore player + enc-dec (token scrape)
+    'vidcore.net',
+    'enc-dec.app'
 ];
 
 let agent: ProxyAgent | null | undefined;
@@ -281,7 +287,29 @@ export async function scrapeFetch(
                         undiciInit
                     )) as unknown as Response;
                 } catch (err) {
-                    throw wrapProxyError(err, urlStr);
+                    // Optional direct fallback (dev / flaky proxy). Default ON so
+                    // a bad PROXY_URL does not brick laptop scrapes; EC2 with a
+                    // healthy proxy still succeeds on the first hop.
+                    const allowFallback = !/^(0|false|off|no)$/i.test(
+                        (
+                            process.env.SCRAPE_PROXY_FALLBACK_DIRECT ?? 'true'
+                        ).trim()
+                    );
+                    if (allowFallback && viaProxy !== true) {
+                        // auto mode: fall through to direct below
+                    } else if (allowFallback && viaProxy === true) {
+                        try {
+                            return await fetch(urlStr, {
+                                ...rest,
+                                headers,
+                                signal
+                            });
+                        } catch {
+                            throw wrapProxyError(err, urlStr);
+                        }
+                    } else {
+                        throw wrapProxyError(err, urlStr);
+                    }
                 }
             }
         }

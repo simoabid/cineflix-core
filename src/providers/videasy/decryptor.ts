@@ -4,6 +4,8 @@
 // enc-dec.app handles the wasm/cryptojs decryption server-side, but it now
 // needs the per-media `seed` (algorithm version enc=2) to decrypt correctly.
 
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
+
 const DEC_API = 'https://enc-dec.app/api/dec-videasy';
 
 // response shape from enc-dec.app
@@ -41,10 +43,12 @@ export async function decryptResponse(
     if (cache.has(key)) return cache.get(key)!;
 
     try {
-        const res = await fetch(DEC_API, {
+        const res = await scrapeFetch(DEC_API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: blob, id: tmdbId, seed })
+            body: JSON.stringify({ text: blob, id: tmdbId, seed }),
+            timeoutMs: 20_000,
+            viaProxy: true
         });
 
         if (!res.ok) return null;
