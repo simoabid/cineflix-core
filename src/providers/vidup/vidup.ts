@@ -177,39 +177,66 @@ export class VidupProvider extends BaseProvider {
             }
         }
 
-        // Step 4: Always add the ythd fallback
+        // Step 4: ythd embed fallback is iframe-only — native players cannot
+        // play it (resolve ≠ playback). Only keep real stream types for SPA.
         for (const stream of fallbackResult.sources) {
             if (stream.server === 'ythd') {
-                sources.push({
-                    url: this.createProxyUrl(
-                        stream.url,
-                        stream.headers ?? this.HEADERS
-                    ),
-                    type: stream.type,
-                    quality: stream.quality ?? 'Auto',
-                    audioTracks: [{ language: 'eng', label: 'English' }],
-                    provider: {
-                        id: this.id,
-                        name: `${this.name} (Fallback)`
-                    }
+                // Record as diagnostic so progressive waterfall can move on
+                // when this is the only "source" we would have returned.
+                diagnostics.push({
+                    code: 'PARTIAL_SCRAPE',
+                    message: `${this.name}: ythd embed fallback skipped (not natively playable)`,
+                    field: 'sources',
+                    severity: 'warning'
                 });
+                continue;
             }
-        }
-
-        this.console.log(
-            `Resolved ${sources.length} source(s) and ${subtitles.length} subtitle(s)`
-        );
-
-        if (sources.length === 0) {
-            diagnostics.push({
-                code: 'PARTIAL_SCRAPE',
-                message: `${this.name}: No playable sources found`,
-                field: 'sources',
-                severity: 'warning'
+            const t = (stream.type ?? '').toLowerCase();
+            if (t !== 'hls' && t !== 'mp4' && t !== 'dash' && t !== 'm3u8') {
+                continue;
+            }
+            sources.push({
+                url: this.createProxyUrl(
+                    stream.url,
+                    stream.headers ?? this.HEADERS
+                ),
+                type: t === 'm3u8' ? 'hls' : (stream.type as 'hls' | 'mp4'),
+                quality: stream.quality ?? 'Auto',
+                audioTracks: [{ language: 'eng', label: 'English' }],
+                provider: {
+                    id: this.id,
+                    name: `${this.name} (${stream.server ?? 'api'})`
+                }
             });
         }
 
-        return { sources, subtitles, diagnostics };
+        // Drop VM "embed" pseudo-sources that are not real media URLs
+        const playable = sources.filter((s) => {
+            const t = (s.type as string)?.toLowerCase?.() ?? '';
+            return t === 'hls' || t === 'mp4' || t === 'dash';
+        });
+
+        if (playable.length === 0) {
+            return {
+                sources: [],
+                subtitles,
+                diagnostics: [
+                    ...diagnostics,
+                    {
+                        code: 'PROVIDER_ERROR',
+                        message: `${this.name}: no natively playable streams (embed-only fallback filtered)`,
+                        field: 'sources',
+                        severity: 'error'
+                    }
+                ]
+            };
+        }
+
+        this.console.log(
+            `Resolved ${playable.length} playable source(s) and ${subtitles.length} subtitle(s)`
+        );
+
+        return { sources: playable, subtitles, diagnostics };
     }
 
     async healthCheck(): Promise<boolean> {
