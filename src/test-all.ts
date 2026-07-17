@@ -478,7 +478,7 @@ async function runMediaCall(
 async function testProvider(provider: BaseProvider): Promise<TestResult> {
     const start = Date.now();
     // Silence provider console noise so diagnostics stay readable
-    const cons = (provider as { console?: { log?: (...a: unknown[]) => void } })
+    const cons = (provider as unknown as { console?: { log?: (...a: unknown[]) => void } })
         .console;
     if (cons && typeof cons.log === 'function') {
         cons.log = () => {};
