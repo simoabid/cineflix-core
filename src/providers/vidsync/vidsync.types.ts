@@ -1,26 +1,6 @@
 /**
- * enc-dec.app wraps every response in this envelope.
- * `status` is a numeric http-style code (200 on success) and the payload
- * lives under `result`. `error` is only present on failures.
- */
-export interface EncDecEnvelope<T> {
-    status: number;
-    result: T;
-    error?: string;
-}
-
-/**
- * result of GET enc-dec.app/api/enc-vidsync.
- * enc-dec.app solves the Cloudflare Turnstile challenge server-side and returns
- * the token, which we send as the X-Cf-Turnstile header on the vidsync fetch.
- */
-export interface VidsyncTurnstile {
-    token: string;
-}
-
-/**
- * a subtitle / caption track from the decrypted stream payload.
- * field names differ across builds, so all common aliases are covered.
+ * Subtitle / caption track from the decrypted stream payload.
+ * Browser uses `{ file, label }`; aliases cover older builds.
  */
 export interface VidsyncTrack {
     url?: string;
@@ -30,33 +10,36 @@ export interface VidsyncTrack {
     label?: string;
     kind?: string;
     type?: string;
+    key?: string;
+    default?: boolean;
 }
 
 /**
- * a single stream entry when the payload exposes a `sources` array.
+ * Single stream entry when the payload exposes a `sources` array.
+ * Browser shape: `{ url, streamType }`.
  */
 export interface VidsyncStreamFile {
     url?: string;
     file?: string;
     type?: string;
+    streamType?: string;
     quality?: string;
     label?: string;
 }
 
 /**
- * the final decrypted stream object (dec-vidsync of a per-server fetch blob).
+ * Decrypted stream object from bro.wasm decrypt(ciphertext, mediaId).
  *
- * NOTE: the exact shape is not documented in the enc-dec.app sample (it only
- * prints the object). Based on the sibling vidcore payload it is most likely a
- * single adaptive manifest (`url`, hls .m3u8 or dash .mpd) plus a `tracks`
- * array of `{ file, label }` subtitles, but this interface also tolerates the
- * `sources` array / `qualities` map variants seen across vidsrc-style
- * providers. The normalizer reads whichever is present.
+ * Observed browser shape:
+ *   { sources: [{ url, streamType }], subtitles: [{ file, label, type? }] }
+ *
+ * Also tolerates single-url / qualities-map variants used by sibling providers.
  */
 export interface VidsyncDecryptedStream {
     url?: string;
     file?: string;
     type?: string;
+    streamType?: string;
     quality?: string;
     sources?: VidsyncStreamFile[];
     qualities?: Record<string, { url?: string; file?: string; type?: string }>;

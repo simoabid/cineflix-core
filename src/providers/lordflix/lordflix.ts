@@ -50,7 +50,9 @@ import type {
 export class LordflixProvider extends BaseProvider {
     readonly id = 'lordflix';
     readonly name = 'LordFlix';
-    readonly enabled = true;
+    // Disabled 2026-07: snowhouse.lordflix.club + lordflix.org both NXDOMAIN;
+    // enc-dec.app enc-lordflix returns 500 ("Missing required values"). Host is gone.
+    readonly enabled = false;
     readonly BASE_URL = 'https://snowhouse.lordflix.club';
     readonly SITE_URL = 'https://lordflix.org';
     readonly API_BASE = 'https://enc-dec.app/api';

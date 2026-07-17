@@ -13,7 +13,10 @@ import { VidApiResponse } from './vidapi.types.js';
 export class VidApiProvider extends BaseProvider {
     readonly id = 'vidapi';
     readonly name = 'VidApi';
-    readonly enabled = true;
+    // Disabled 2026-07: vaplayer.ru rebranded to unrelated "PlayBox" upload site;
+    // streamdata.vaplayer.ru/api.php returns bare 404; brightpathsignals.com NXDOMAIN.
+    // Multiple recon attempts failed — re-enable only after a live stream API is found.
+    readonly enabled = false;
     readonly BASE_URL = 'https://vaplayer.ru';
     readonly IFRAME_URL = 'https://brightpathsignals.com';
     readonly API_URL = 'https://streamdata.vaplayer.ru/api.php';

@@ -3,8 +3,13 @@ import type { PeachifyApiResponse } from './peachify.types.js';
 
 const { subtle } = webcrypto;
 
-const ENCRYPTION_KEY_HEX =
-    'YThmMmExYjVlOWM0NzA4MTRmNmIyYzNhNWQ4ZTdmOWMxYTJiM2M0ZDVlM2Y3YThiOGNhZDFlMmQwYTRkNWM1Yg==';
+// AES-GCM key as hex (from peachify.top embed bundle, 2026-07).
+// Last nibble rotated from ...c5b → ...c5d; stored as base64 of the hex string
+// for compatibility with importDecryptionKey().
+const ENCRYPTION_KEY_HEX = Buffer.from(
+    'a8f2a1b5e9c470814f6b2c3a5d8e7f9c1a2b3c4d5e3f7a8b8cad1e2d0a4d5c5d',
+    'utf8'
+).toString('base64');
 
 /**
  * Peachify payload format:

@@ -77,14 +77,14 @@ export class VidcoreProvider extends BaseProvider {
             }
 
             // 2. exchange it for the servers/stream urls + csrf token
+            // NOTE (2026-07): enc-vidcore often returns an empty `token` string.
+            // Server list/stream POSTs still succeed without a CSRF header in
+            // that case, so only require servers + stream URLs.
             const handshake = await this.getHandshake(pageToken);
-            if (
-                !handshake?.servers ||
-                !handshake?.stream ||
-                !handshake?.token
-            ) {
+            if (!handshake?.servers || !handshake?.stream) {
                 return this.emptyResult('enc-vidcore handshake incomplete');
             }
+            handshake.token = handshake.token ?? '';
 
             // 3. decrypt the server list
             const servers = await this.getServers(handshake);
@@ -153,10 +153,12 @@ export class VidcoreProvider extends BaseProvider {
     private async fetchPageToken(
         media: ProviderMediaObject
     ): Promise<string | null> {
+        // TV pages redirect (308) when a trailing slash is present and the
+        // body of the redirect response has no `en` token — always omit it.
         const pageUrl =
             media.type === 'movie'
                 ? `${this.BASE_URL}/movie/${media.tmdbId}`
-                : `${this.BASE_URL}/tv/${media.tmdbId}/${media.s ?? 1}/${media.e ?? 1}/`;
+                : `${this.BASE_URL}/tv/${media.tmdbId}/${media.s ?? 1}/${media.e ?? 1}`;
 
         const res = await fetch(pageUrl, {
             headers: this.HEADERS,

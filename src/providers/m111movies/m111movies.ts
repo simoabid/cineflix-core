@@ -1,21 +1,15 @@
 /**
- * m111movies.ts — 111movies.net provider for CinePro Core.
+ * m111movies.ts — 111Movies / Vidlove provider for CinePro Core.
  *
- * 111movies is a Next.js SPA with an obfuscated player. The API flow is:
- *   1. Embed page server-renders a `data` blob in __NEXT_DATA__
- *   2. The player's JS decodes the blob into an API path
- *   3. GET /{api_path} → returns JSON array of servers (plain JSON!)
- *   4. GET /{api_path}/{server.data} → returns JSON {url, tracks, noReferrer}
- *   5. The `url` field is the direct m3u8/mp4 stream URL
- *   6. Subtitles from /wyzie?id={tmdbId} (same wyzie API as vidup)
+ * Entry: 111movies.net → 302 → player.vidlove.cc SPA.
+ * Resolve path (pure HTTP, no browser):
+ *   POST momlover…/auth/generate-token
+ *   GET  momlover…/{moviebox|cline|self|zebra|fabric}/movie|tv/…
+ *        + x-request-token + x-response-encryption: aes-gcm
+ *   Decrypt AES-GCM payload → stream URLs
  *
- * The `data` blob decode requires running the player's obfuscated JS.
- * This provider uses a headless browser (Playwright) ONLY for the _data
- * decode (~5 seconds), then makes all API calls in pure HTTP. The API
- * responses are plain JSON (not encrypted like vidup), so stream resolution
- * is fast once the API URL is known.
- *
- * Multiple servers are supported (Alpha, Charlie, etc.).
+ * Field notes: SPA bundle sec-gcm + sec-constants (RESPONSE_BASE_KEY).
+ * Methodology: docs/SCRAPING-MASTERCLASS.md §2.
  */
 import { BaseProvider } from '@omss/framework';
 import type {
@@ -27,24 +21,20 @@ import type {
     Subtitle,
     SubtitleFormat
 } from '@omss/framework';
-import { resolveM111Streams } from './m111moviesClient.js';
+import {
+    BROWSER_HEADERS,
+    PLAYER_ORIGIN,
+    resolveM111Streams
+} from './m111moviesClient.js';
 
 export class M111MoviesProvider extends BaseProvider {
     readonly id = 'm111movies';
     readonly name = '111Movies';
     readonly enabled = true;
 
-    readonly BASE_URL = 'https://111movies.net';
+    readonly BASE_URL = PLAYER_ORIGIN;
 
-    readonly HEADERS: Record<string, string> = {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-            '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-        Accept: 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Referer: 'https://111movies.net/',
-        Origin: 'https://111movies.net'
-    };
+    readonly HEADERS: Record<string, string> = { ...BROWSER_HEADERS };
 
     readonly capabilities: ProviderCapabilities = {
         supportedContentTypes: ['movies', 'tv']
@@ -89,9 +79,10 @@ export class M111MoviesProvider extends BaseProvider {
             const sources: Source[] = result.sources.map((s) => ({
                 url: this.createProxyUrl(s.url, {
                     ...this.HEADERS,
+                    ...(s.headers ?? {}),
                     Referer: s.noReferrer
                         ? 'no-referrer'
-                        : 'https://111movies.net/'
+                        : `${PLAYER_ORIGIN}/`
                 }),
                 type: s.type,
                 quality: s.quality,
@@ -109,12 +100,7 @@ export class M111MoviesProvider extends BaseProvider {
             }));
 
             if (sources.length === 0) {
-                diagnostics.push({
-                    code: 'PARTIAL_SCRAPE',
-                    message: `${this.name}: No playable sources found`,
-                    field: 'sources',
-                    severity: 'warning'
-                });
+                return this.emptyResult('No playable sources found');
             }
 
             return { sources, subtitles, diagnostics };
@@ -143,7 +129,7 @@ export class M111MoviesProvider extends BaseProvider {
                 headers: this.HEADERS,
                 signal: AbortSignal.timeout(10_000)
             });
-            return res.ok;
+            return res.ok || res.status === 302 || res.status === 301;
         } catch {
             return false;
         }

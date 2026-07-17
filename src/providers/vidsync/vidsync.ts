@@ -6,70 +6,58 @@ import type {
     Source,
     Subtitle
 } from '@omss/framework';
-import type {
-    EncDecEnvelope,
-    VidsyncDecryptedStream,
-    VidsyncTrack,
-    VidsyncTurnstile
-} from './vidsync.types.js';
+import { createBroWasm, type BroWasm } from './broWasm.js';
+import type { VidsyncDecryptedStream, VidsyncTrack } from './vidsync.types.js';
 
 /**
- * VidSync (vidsync.xyz)
+ * VidSync (vidsync.live — vidsync.xyz 301s here)
  *
- * Unlike vidfast/vidcore, vidsync does not hand back site urls to POST to.
- * enc-dec.app instead solves the Cloudflare Turnstile challenge for us and the
- * player queries vidsync directly. Flow (mirrored from the enc-dec.app
- * `vidsync` sample):
+ * Native browser flow (embed chunk 96fa5e81961f95b0.js, 2026-07):
  *
- *   1. GET enc-dec.app/api/enc-vidsync -> { token } (a Cloudflare Turnstile
- *      token, valid briefly and effectively single-use).
- *   2. Send it as the X-Cf-Turnstile header and GET
- *      vidsync.xyz/api/stream/fetch?type=&title=&releaseYear=&mediaId=<tmdb>
- *      &serverName=<server>[&season=&episode=] -> encrypted text.
- *   3. POST enc-dec.app/api/dec-vidsync { text, id:<tmdb> } -> decrypted stream.
+ *   1. Cloudflare Turnstile (sitekey 0x4AAAAAAB_8pfVJvAg9lSQ4,
+ *      action stream_fetch) → X-CF-Turnstile
+ *   2. GET /api/stream/fetch?...&serverName=…
+ *   3. bro.wasm: SHA-512(PREFIX+X12) → verify → decrypt(text, mediaId)
  *
- * vidsync exposes several servers (see /api/stream/serverList). We fetch that
- * list (falling back to a known set) and fan out across them, requesting a
- * fresh Turnstile token per server because the token is single-use.
+ * PROVED (mitmweb capture + Node, 2026-07-15):
+ *   • bro.wasm decrypt is pure Node and returns mp4_qualities JSON
+ *   • Live 200 ciphertext for Godfather/cinebox decrypts to workers.dev URLs
  *
- * STATUS (2026-07-09): built against the enc-dec.app `vidsync` sample and
- * exercised end to end with vidsync_trace.py. vidsync.xyz itself is live (the
- * serverList endpoint returns 200 with the current servers), but enc-dec.app's
- * token endpoint currently 500s on every request:
- *     GET /api/enc-vidsync ->
- *     { status: 500, error: "Generation failure: InitTabs2 must be called
- *       before generating a token" }
- * That is a server-side fault in enc-dec.app's Turnstile solver (its solver
- * tabs are not initialised) - NOT a bug in this provider or in vidsync.xyz.
- * Because we fail cleanly at the token step (no token -> no requests -> empty
- * result, never a broken stream), this provider is left ENABLED so it recovers
- * automatically the moment enc-dec.app fixes its token service. Re-run
- * vidsync_trace.py to check: a 200 with a token means it is working again.
+ * BLOCKED for shipping:
+ *   • Pure-Node Turnstile mint (Cloudflare closed; not Cap.js)
+ *   • We refuse Playwright / 1–2h token paste injectors (ops-hostile)
+ *
+ * enc-dec.app enc-vidsync is dead (InitTabs2). See docs/VIDSYNC-SCRAPING.md.
+ *
+ * CAVEATS: resolve ≠ playback; local ≠ EC2.
+ *
+ * STATUS: enabled = false until a pure Turnstile (or equivalent) mint exists.
+ * broWasm remains for offline decrypt / future wire-up.
  */
 export class VidsyncProvider extends BaseProvider {
     readonly id = 'vidsync';
     readonly name = 'VidSync';
-    readonly enabled = true;
-    readonly BASE_URL = 'https://vidsync.xyz';
-    readonly API_BASE = 'https://enc-dec.app/api';
+    /** Disabled: Turnstile has no pure-Node mint; browser injectors rejected. */
+    readonly enabled = false;
+    readonly BASE_URL = 'https://vidsync.live';
     readonly HEADERS: Record<string, string> = {
         Accept: '*/*',
-        Origin: 'https://vidsync.xyz',
-        Referer: 'https://vidsync.xyz/',
+        Origin: 'https://vidsync.live',
+        Referer: 'https://vidsync.live/',
         'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
         'X-Requested-With': 'XMLHttpRequest'
     };
 
-    // fallback if /api/stream/serverList is unreachable.
     private readonly DEFAULT_SERVERS = [
-        'cinevault',
-        'cinedub',
         'cinebox',
-        'cineflix',
+        'cinebox-1',
+        'cinefast',
+        'cinenet',
+        'cineready',
+        'cinedub-2',
         'cinevip',
-        'cinecloud',
-        'cine4k'
+        'cineviet'
     ];
 
     private readonly TIMEOUT_MS = 15000;
@@ -89,9 +77,28 @@ export class VidsyncProvider extends BaseProvider {
     private async getSources(
         media: ProviderMediaObject
     ): Promise<ProviderResult> {
+        // Hard gate: do not attempt Playwright / env-token mint paths.
+        return this.emptyResult(
+            'disabled — bro.wasm decrypt is pure Node, but Cloudflare ' +
+                'Turnstile has no pure-Node mint (enc-vidsync dead; browser ' +
+                'token injectors rejected). See docs/VIDSYNC-SCRAPING.md'
+        );
+    }
+
+    /**
+     * Research / future path: stream/fetch + bro decrypt once a pure
+     * Turnstile mint exists. Not used while enabled === false.
+     */
+    async resolveWithTurnstileToken(
+        media: ProviderMediaObject,
+        token: string
+    ): Promise<ProviderResult> {
         try {
             if (!media.title) {
                 return this.emptyResult('missing title (required by vidsync)');
+            }
+            if (!token) {
+                return this.emptyResult('missing X-CF-Turnstile token');
             }
 
             const servers = await this.getServerList();
@@ -99,33 +106,12 @@ export class VidsyncProvider extends BaseProvider {
                 return this.emptyResult('no vidsync servers available');
             }
 
-            // Fast-fail probe: enc-dec.app mints the Cloudflare Turnstile token
-            // for us, and when that service is unhealthy every request 500s
-            // (see the STATUS note above). Probe once so we return a single
-            // clear diagnostic instead of hammering enc-vidsync per server.
-            const probeToken = await this.getTurnstileToken();
-            if (!probeToken) {
-                return this.emptyResult(
-                    'enc-dec.app could not mint a Turnstile token ' +
-                        '(enc-vidsync unavailable)'
-                );
-            }
-
             this.console.log(
-                `vidsync: querying ${servers.length} server(s) for "${media.title}"`
+                `vidsync: research resolve ${servers.length} server(s) for "${media.title}"`
             );
 
-            // fan out across servers; the probe token is reused for the first
-            // server (so it isn't wasted) and the rest mint their own fresh
-            // single-use token.
             const settled = await Promise.allSettled(
-                servers.map((server, i) =>
-                    this.fetchServer(
-                        media,
-                        server,
-                        i === 0 ? probeToken : undefined
-                    )
-                )
+                servers.map((server) => this.fetchServer(media, server, token))
             );
 
             const sources: Source[] = [];
@@ -160,10 +146,6 @@ export class VidsyncProvider extends BaseProvider {
                 });
             }
 
-            this.console.log(
-                `vidsync: ${dedupedSources.length} source(s), ${dedupedSubs.length} subtitle(s)`
-            );
-
             return {
                 sources: dedupedSources,
                 subtitles: dedupedSubs,
@@ -176,7 +158,6 @@ export class VidsyncProvider extends BaseProvider {
         }
     }
 
-    // fetches the live server list, falling back to the known defaults.
     private async getServerList(): Promise<string[]> {
         try {
             const res = await fetch(`${this.BASE_URL}/api/stream/serverList`, {
@@ -196,25 +177,19 @@ export class VidsyncProvider extends BaseProvider {
                 if (names.length > 0) return names;
             }
         } catch {
-            // ignore and fall back
+            // fall through
         }
         return this.DEFAULT_SERVERS;
     }
 
-    // 1-3: turnstile token -> vidsync fetch -> dec-vidsync -> normalize.
     private async fetchServer(
         media: ProviderMediaObject,
         server: string,
-        presetToken?: string
+        token: string
     ): Promise<{ sources: Source[]; subtitles: Subtitle[] } | null> {
-        // reuse the probe token for the first server so it isn't wasted; every
-        // other server mints its own fresh single-use token.
-        const token = presetToken ?? (await this.getTurnstileToken());
-        if (!token) return null;
-
         const url = this.buildFetchUrl(media, server);
         const res = await fetch(url, {
-            headers: { ...this.HEADERS, 'X-Cf-Turnstile': token },
+            headers: { ...this.HEADERS, 'X-CF-Turnstile': token },
             signal: AbortSignal.timeout(this.TIMEOUT_MS)
         });
         if (!res.ok) return null;
@@ -222,26 +197,36 @@ export class VidsyncProvider extends BaseProvider {
         const encrypted = await res.text();
         if (!encrypted) return null;
 
-        const decrypted = await this.decVidsync(encrypted, media.tmdbId);
-        if (!decrypted) return null;
+        if (encrypted.trimStart().startsWith('{')) {
+            try {
+                const err = JSON.parse(encrypted) as { error?: string };
+                if (err.error) return null;
+            } catch {
+                // try decrypt
+            }
+        }
+
+        const mediaId = Number(media.tmdbId);
+        if (!Number.isFinite(mediaId)) return null;
+
+        let plain: string;
+        try {
+            const bro: BroWasm = await createBroWasm();
+            plain = bro.decrypt(encrypted, mediaId);
+        } catch {
+            return null;
+        }
+
+        let decrypted: VidsyncDecryptedStream;
+        try {
+            decrypted = JSON.parse(plain) as VidsyncDecryptedStream;
+        } catch {
+            return null;
+        }
 
         return this.normalizeStream(decrypted, server);
     }
 
-    // GET enc-vidsync -> a fresh (single-use) Cloudflare Turnstile token.
-    private async getTurnstileToken(): Promise<string | null> {
-        const res = await fetch(`${this.API_BASE}/enc-vidsync`, {
-            signal: AbortSignal.timeout(this.TIMEOUT_MS)
-        });
-        if (!res.ok) return null;
-
-        const json = (await res.json()) as EncDecEnvelope<VidsyncTurnstile>;
-        if (json.status !== 200 || !json.result?.token) return null;
-        return json.result.token;
-    }
-
-    // builds vidsync.xyz/api/stream/fetch with the sample's query contract.
-    // URLSearchParams encodes spaces as '+', matching the sample's quote_plus.
     private buildFetchUrl(media: ProviderMediaObject, server: string): string {
         const params = new URLSearchParams({
             type: media.type,
@@ -259,27 +244,6 @@ export class VidsyncProvider extends BaseProvider {
         return `${this.BASE_URL}/api/stream/fetch?${params.toString()}`;
     }
 
-    // POST enc-dec.app/api/dec-vidsync { text, id } and unwrap the envelope.
-    private async decVidsync(
-        encrypted: string,
-        tmdbId: number | string
-    ): Promise<VidsyncDecryptedStream | null> {
-        const res = await fetch(`${this.API_BASE}/dec-vidsync`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: encrypted, id: String(tmdbId) }),
-            signal: AbortSignal.timeout(this.TIMEOUT_MS)
-        });
-        if (!res.ok) return null;
-
-        const json =
-            (await res.json()) as EncDecEnvelope<VidsyncDecryptedStream>;
-        if (json.status !== 200) return null;
-        return json.result ?? null;
-    }
-
-    // maps a decrypted stream payload into Source[] / Subtitle[]. Handles the
-    // single-url, sources-array and qualities-map variants.
     private normalizeStream(
         stream: VidsyncDecryptedStream,
         server: string
@@ -289,7 +253,6 @@ export class VidsyncProvider extends BaseProvider {
     } {
         const sources: Source[] = [];
         const subtitles: Subtitle[] = [];
-
         const serverQuality = this.serverQuality(server);
 
         const pushSource = (
@@ -307,34 +270,33 @@ export class VidsyncProvider extends BaseProvider {
             });
         };
 
-        // single playable url
         pushSource(
             stream.url ?? stream.file,
-            stream.type,
+            stream.type ?? stream.streamType,
             stream.quality ?? serverQuality
         );
 
-        // explicit sources array
         if (Array.isArray(stream.sources)) {
             for (const s of stream.sources) {
-                pushSource(s.url ?? s.file, s.type, s.quality ?? s.label);
+                pushSource(
+                    s.url ?? s.file,
+                    s.type ?? s.streamType,
+                    s.quality ?? s.label
+                );
             }
         }
 
-        // qualities map keyed by resolution
         if (stream.qualities && typeof stream.qualities === 'object') {
             for (const [quality, entry] of Object.entries(stream.qualities)) {
                 pushSource(entry?.url ?? entry?.file, entry?.type, quality);
             }
         }
 
-        // subtitles can live under any of these keys
-        const trackLists: Array<VidsyncTrack[] | undefined> = [
+        for (const list of [
             stream.tracks,
             stream.subtitles,
             stream.captions
-        ];
-        for (const list of trackLists) {
+        ] as Array<VidsyncTrack[] | undefined>) {
             if (!Array.isArray(list)) continue;
             for (const track of list) {
                 const url = track.url ?? track.file;
@@ -362,8 +324,6 @@ export class VidsyncProvider extends BaseProvider {
         return { sources, subtitles };
     }
 
-    // vidsync server names hint at quality (e.g. "cine4k"); use them so the
-    // multiple servers stay distinguishable instead of collapsing to "Auto".
     private serverQuality(server: string): string {
         const s = server.toLowerCase();
         if (s.includes('4k') || s.includes('2160')) return '4K';
@@ -432,12 +392,11 @@ export class VidsyncProvider extends BaseProvider {
 
     async healthCheck(): Promise<boolean> {
         try {
-            const res = await fetch(this.BASE_URL, {
-                method: 'HEAD',
+            const res = await fetch(`${this.BASE_URL}/api/stream/serverList`, {
                 headers: this.HEADERS,
                 signal: AbortSignal.timeout(this.TIMEOUT_MS)
             });
-            return res.status < 500;
+            return res.ok;
         } catch {
             return false;
         }

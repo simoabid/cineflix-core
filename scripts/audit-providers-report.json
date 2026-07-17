@@ -1,0 +1,105 @@
+{
+  "generatedAt": "2026-07-17T19:05:48.404Z",
+  "movies": [
+    {
+      "tmdbId": "155",
+      "title": "The Dark Knight"
+    },
+    {
+      "tmdbId": "238",
+      "title": "The Godfather"
+    },
+    {
+      "tmdbId": "27205",
+      "title": "Inception"
+    }
+  ],
+  "tv": [
+    {
+      "tmdbId": "1399",
+      "title": "Game of Thrones",
+      "s": 1,
+      "e": 1
+    },
+    {
+      "tmdbId": "1396",
+      "title": "Breaking Bad",
+      "s": 1,
+      "e": 1
+    }
+  ],
+  "reports": [
+    {
+      "dir": "m111movies",
+      "id": "m111movies",
+      "name": "111Movies",
+      "enabled": true,
+      "className": "M111MoviesProvider",
+      "modulePath": "/home/seemoo/Documents/CINEFLIX Project/cineflix-core/src/providers/m111movies/m111movies.ts",
+      "capabilities": [
+        "movies",
+        "tv"
+      ],
+      "calls": [
+        {
+          "title": "The Dark Knight",
+          "tmdbId": "155",
+          "kind": "movie",
+          "outcome": "ok",
+          "sources": 7,
+          "subtitles": 0,
+          "ms": 1404,
+          "sampleUrl": "http://localhost/v1/proxy?data=%7B%22url%22%3A%22https%3A%2F%2Fbcdn.hakunaymatata.com%2Fresource%2Fh"
+        },
+        {
+          "title": "The Godfather",
+          "tmdbId": "238",
+          "kind": "movie",
+          "outcome": "ok",
+          "sources": 8,
+          "subtitles": 0,
+          "ms": 349,
+          "sampleUrl": "http://localhost/v1/proxy?data=%7B%22url%22%3A%22https%3A%2F%2Fbcdn.hakunaymatata.com%2Fresource%2Fh"
+        },
+        {
+          "title": "Inception",
+          "tmdbId": "27205",
+          "kind": "movie",
+          "outcome": "ok",
+          "sources": 7,
+          "subtitles": 0,
+          "ms": 396,
+          "sampleUrl": "http://localhost/v1/proxy?data=%7B%22url%22%3A%22https%3A%2F%2Fbcdn.hakunaymatata.com%2Ftran-audio%2"
+        },
+        {
+          "title": "Game of Thrones",
+          "tmdbId": "1399",
+          "kind": "tv",
+          "outcome": "ok",
+          "sources": 6,
+          "subtitles": 0,
+          "ms": 844,
+          "sampleUrl": "http://localhost/v1/proxy?data=%7B%22url%22%3A%22https%3A%2F%2Fbcdn.hakunaymatata.com%2Fresource%2Fh"
+        },
+        {
+          "title": "Breaking Bad",
+          "tmdbId": "1396",
+          "kind": "tv",
+          "outcome": "ok",
+          "sources": 6,
+          "subtitles": 0,
+          "ms": 790,
+          "sampleUrl": "http://localhost/v1/proxy?data=%7B%22url%22%3A%22https%3A%2F%2Fbcdn.hakunaymatata.com%2Fresource%2Fh"
+        }
+      ],
+      "score": {
+        "ok": 5,
+        "empty": 0,
+        "error": 0,
+        "timeout": 0,
+        "totalAttempts": 5
+      },
+      "verdict": "works"
+    }
+  ]
+}

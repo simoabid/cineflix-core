@@ -4,63 +4,66 @@ import type {
     ProviderMediaObject,
     ProviderResult,
     Source,
-    Subtitle
+    Subtitle,
+    SubtitleFormat
 } from '@omss/framework';
-import { randomBytes } from 'crypto';
-import type {
-    EncDecEnvelope,
-    HexaCapToken,
-    HexaDecryptedStream,
-    HexaTrack
-} from './hexa.types.js';
+import { resolveHexaAll } from './hexaClient.js';
+
+interface WyzieSubtitle {
+    url: string;
+    format?: string;
+    display?: string;
+    language?: string;
+    isHearingImpaired?: boolean;
+}
 
 /**
- * Hexa (hexa.su, also serves flixer.su; api host theemoviedb.hexa.su)
+ * Hexa (hexa.su / theemoviedb.hexa.su)
  *
- * Unlike cinesrc/lordflix there is no proof-of-work: hexa gates on a random
- * per-request api key plus a capability token that enc-dec.app mints for us.
- * Flow (mirrored from the enc-dec.app `hexa` sample):
+ * Same WASM crypto pipeline as vidsrc (HMAC-signed image API + AES decrypt),
+ * plus Cap.js Standalone (cap.hexa.su) for x-cap-token:
+ *   challenge → PoW solutions + instrumentation math → redeem → token.
  *
- *   1. Generate a random 32-byte hex string; send it as the X-Api-Key header
- *      AND reuse it as the dec-hexa `key` (both must match).
- *   2. GET enc-dec.app/api/enc-hexa -> { token }; send it as X-Cap-Token.
- *   3. GET theemoviedb.hexa.su/api/tmdb/{movie|tv}/{tmdb}[/season/{s}/episode/
- *      {e}]/images  (with the fixed X-Fingerprint-Lite + the two headers
- *      above) -> encrypted text.
- *   4. POST enc-dec.app/api/dec-hexa { text, key } -> decrypted stream.
+ * Cap instrumentation is re-executed in Node (DOM-tree mock + string-table
+ * rewrite); no browser / enc-dec.app dependency.
  *
- * A single request resolves a title (no per-server fan-out), so we fail fast on
- * a missing token / non-200 / empty body and return a clear diagnostic.
+ * ---------------------------------------------------------------------------
+ * CAVEATS (read before declaring "production healthy"):
  *
- * STATUS (2026-07-09): built against the enc-dec.app `hexa` sample and
- * exercised via hexa_trace.py. This provider's code path is correct, but
- * enc-dec.app has DISABLED the token endpoint: GET /api/enc-hexa returns
- *     { status: 500, error: "Generation failure: disabled" }
- * for every request (both movie and tv), so no X-Cap-Token can be minted and
- * the flow stops before the image fetch/dec. That is a deliberate server-side
- * shutoff on enc-dec.app's side - NOT a bug in this provider or in hexa.su.
- * Because we fail cleanly at the token step (no token -> empty result, never a
- * broken stream), this provider is left ENABLED so it recovers automatically
- * if enc-dec.app re-enables enc-hexa. Re-run hexa_trace.py to check: a 200 with
- * a token means it is working again. (The decrypted shape is still unconfirmed;
- * the normalizer reads the tolerant union of the sibling providers' shapes.)
+ * 1) Resolve ≠ playback
+ *    Returning proxied m3u8/mp4 URLs only proves the API handshake worked.
+ *    CDN edges can still 403/410 once the player hits segments through our
+ *    proxy (same class of failure as VidKing Oxygen). Always verify real
+ *    playback on the deployment that will serve users.
+ *
+ * 2) Local ≠ EC2 / production network
+ *    Cap, theemoviedb.hexa.su, and CDNs may treat residential IPs, datacenter
+ *    IPs, and Cloudflare-fronted hosts differently. A green local smoke test
+ *    is necessary but not sufficient for EC2/core.cineflix.dev.
+ *
+ * Full field notes: docs/HEXA-SCRAPING.md
+ * ---------------------------------------------------------------------------
  */
 export class HexaProvider extends BaseProvider {
     readonly id = 'hexa';
     readonly name = 'Hexa';
     readonly enabled = true;
-    readonly BASE_URL = 'https://theemoviedb.hexa.su';
-    readonly SITE_URL = 'https://hexa.su';
-    readonly API_BASE = 'https://enc-dec.app/api';
+
+    readonly BASE_URL = 'https://hexa.su';
+    readonly SUBTITLE_API = 'https://sub.wyzie.ru/search';
+
     readonly HEADERS: Record<string, string> = {
         'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
         Referer: 'https://hexa.su/',
-        Accept: 'text/plain',
-        'X-Fingerprint-Lite': 'e9136c41504646444'
+        Origin: 'https://hexa.su'
     };
 
-    private readonly TIMEOUT_MS = 15000;
+    readonly STREAM_HEADERS: Record<string, string> = {
+        'User-Agent': this.HEADERS['User-Agent'] as string,
+        Referer: 'https://hexa.su/',
+        Origin: 'https://hexa.su'
+    };
 
     readonly capabilities: ProviderCapabilities = {
         supportedContentTypes: ['movies', 'tv']
@@ -77,212 +80,72 @@ export class HexaProvider extends BaseProvider {
     private async getSources(
         media: ProviderMediaObject
     ): Promise<ProviderResult> {
+        if (media.type === 'tv' && (media.s == null || media.e == null)) {
+            return this.emptyResult('Missing season/episode for TV request');
+        }
+        if (!media.tmdbId) {
+            return this.emptyResult('tmdbId is required');
+        }
+
         try {
-            // 1. random 32-byte hex, used as BOTH the X-Api-Key header and the
-            // dec-hexa key (they must be identical).
-            const key = randomBytes(32).toString('hex');
-
-            // 2. capability token minted by enc-dec.app.
-            const token = await this.getCapToken();
-            if (!token) {
-                return this.emptyResult(
-                    'enc-dec.app could not mint a hexa cap token ' +
-                        '(enc-hexa unavailable)'
-                );
-            }
-
-            // 3. fetch the encrypted blob.
-            const url = this.buildUrl(media);
-            const res = await fetch(url, {
-                headers: {
-                    ...this.HEADERS,
-                    'X-Api-Key': key,
-                    'X-Cap-Token': token
-                },
-                signal: AbortSignal.timeout(this.TIMEOUT_MS)
+            const { sources: resolved } = await resolveHexaAll({
+                type: media.type,
+                tmdbId: media.tmdbId,
+                seasonId: media.type === 'tv' ? media.s : undefined,
+                episodeId: media.type === 'tv' ? media.e : undefined
             });
-            if (!res.ok) {
-                return this.emptyResult(
-                    `hexa image endpoint returned ${res.status}`
-                );
-            }
 
-            const encrypted = await res.text();
-            if (!encrypted) {
-                return this.emptyResult('hexa returned an empty body');
-            }
+            this.console.log(`hexa: ${resolved.length} server source(s)`);
 
-            // 4. decrypt.
-            const decrypted = await this.decHexa(encrypted, key);
-            if (!decrypted) {
-                return this.emptyResult('dec-hexa failed to decrypt the blob');
-            }
-
-            // 5. normalize.
-            const { sources, subtitles } = this.normalizeStream(decrypted);
-            const dedupedSources = this.dedupeSources(sources);
-            const dedupedSubs = this.dedupeSubtitles(subtitles);
-
-            if (dedupedSources.length === 0) {
-                return this.emptyResult('hexa returned no playable sources');
-            }
-
-            this.console.log(
-                `hexa: ${dedupedSources.length} source(s), ${dedupedSubs.length} subtitle(s)`
-            );
-
-            return {
-                sources: dedupedSources,
-                subtitles: dedupedSubs,
-                diagnostics: []
-            };
-        } catch (error) {
-            return this.emptyResult(
-                error instanceof Error ? error.message : 'unknown error'
-            );
-        }
-    }
-
-    // GET enc-dec.app/api/enc-hexa -> capability token.
-    private async getCapToken(): Promise<string | null> {
-        const res = await fetch(`${this.API_BASE}/enc-hexa`, {
-            signal: AbortSignal.timeout(this.TIMEOUT_MS)
-        });
-        if (!res.ok) return null;
-
-        const json = (await res.json()) as EncDecEnvelope<HexaCapToken>;
-        if (json.status !== 200 || !json.result?.token) return null;
-        return json.result.token;
-    }
-
-    // theemoviedb.hexa.su image endpoint (obfuscated stream source).
-    private buildUrl(media: ProviderMediaObject): string {
-        if (media.type === 'tv') {
-            return (
-                `${this.BASE_URL}/api/tmdb/tv/${media.tmdbId}` +
-                `/season/${media.s ?? 1}/episode/${media.e ?? 1}/images`
-            );
-        }
-        return `${this.BASE_URL}/api/tmdb/movie/${media.tmdbId}/images`;
-    }
-
-    // POST enc-dec.app/api/dec-hexa { text, key } and unwrap the envelope.
-    private async decHexa(
-        encrypted: string,
-        key: string
-    ): Promise<HexaDecryptedStream | null> {
-        const res = await fetch(`${this.API_BASE}/dec-hexa`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: encrypted, key }),
-            signal: AbortSignal.timeout(this.TIMEOUT_MS)
-        });
-        if (!res.ok) return null;
-
-        const json = (await res.json()) as EncDecEnvelope<HexaDecryptedStream>;
-        if (json.status !== 200) return null;
-        return json.result ?? null;
-    }
-
-    // maps a decrypted stream payload into Source[] / Subtitle[]. Tolerates the
-    // stream-array, sources-array, qualities-map and single-url variants.
-    private normalizeStream(stream: HexaDecryptedStream): {
-        sources: Source[];
-        subtitles: Subtitle[];
-    } {
-        const sources: Source[] = [];
-        const subtitles: Subtitle[] = [];
-
-        const pushSource = (
-            rawUrl?: string,
-            typeHint?: string,
-            quality?: string
-        ) => {
-            if (!rawUrl) return;
-            sources.push({
-                url: this.createProxyUrl(rawUrl, this.HEADERS),
-                type: this.detectType(rawUrl, typeHint),
-                quality: quality || 'Auto',
-                audioTracks: [],
-                provider: { id: this.id, name: this.name }
-            });
-        };
-
-        const pushSubtitles = (list?: HexaTrack[]) => {
-            if (!Array.isArray(list)) return;
-            for (const track of list) {
-                const url = track.url ?? track.file;
-                if (!url) continue;
-                const kind = (track.kind ?? track.type ?? '').toLowerCase();
-                if (
-                    kind.includes('thumb') ||
-                    kind === 'video' ||
-                    kind === 'audio'
-                ) {
-                    continue;
+            const sources: Source[] = resolved.map((s) => ({
+                url: this.createProxyUrl(s.url, this.STREAM_HEADERS),
+                type: s.url.includes('.mp4') ? 'mp4' : 'hls',
+                quality: 'Auto',
+                audioTracks: [{ language: 'eng', label: 'English' }],
+                provider: {
+                    id: this.id,
+                    name: `${this.name} (${this.titleCase(s.server)})`
                 }
-                subtitles.push({
-                    url: this.createProxyUrl(url, this.HEADERS),
-                    label:
-                        track.label ??
-                        track.language ??
-                        track.lang ??
-                        'Unknown',
-                    format: this.detectSubtitleFormat(url, track.type)
-                });
-            }
-        };
+            }));
 
-        // stream / sources arrays: [{ type, playlist|url|file, captions }]
-        const entryLists = [stream.stream, stream.sources];
-        for (const list of entryLists) {
-            if (!Array.isArray(list)) continue;
-            for (const entry of list) {
-                pushSource(
-                    entry.playlist ?? entry.url ?? entry.file,
-                    entry.type,
-                    entry.quality ?? entry.label
-                );
-                pushSubtitles(entry.captions);
-                pushSubtitles(entry.subtitles);
-                pushSubtitles(entry.tracks);
-            }
+            const subtitles = await this.fetchSubtitles(media);
+
+            return { sources, subtitles, diagnostics: [] };
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : 'Unknown error';
+            this.console.log(`hexa failed: ${message}`);
+            return this.emptyResult(message);
         }
-
-        // single playable url (fallback variant)
-        pushSource(
-            stream.url ?? stream.file ?? stream.playlist,
-            stream.type,
-            stream.quality
-        );
-
-        // qualities map keyed by resolution (fallback variant)
-        if (stream.qualities && typeof stream.qualities === 'object') {
-            for (const [quality, entry] of Object.entries(stream.qualities)) {
-                pushSource(entry?.url ?? entry?.file, entry?.type, quality);
-            }
-        }
-
-        // top-level subtitle lists
-        pushSubtitles(stream.tracks);
-        pushSubtitles(stream.subtitles);
-        pushSubtitles(stream.captions);
-
-        return { sources, subtitles };
     }
 
-    private detectType(url: string, hint?: string): 'hls' | 'mp4' | 'dash' {
-        const haystack = `${hint ?? ''} ${url}`.toLowerCase();
-        if (haystack.includes('.mpd') || haystack.includes('dash'))
-            return 'dash';
-        if (haystack.includes('m3u8') || haystack.includes('hls')) return 'hls';
-        return 'mp4';
+    private async fetchSubtitles(
+        media: ProviderMediaObject
+    ): Promise<Subtitle[]> {
+        try {
+            let url = `${this.SUBTITLE_API}?id=${media.tmdbId}`;
+            if (media.type === 'tv' && media.s != null && media.e != null) {
+                url += `&season=${media.s}&episode=${media.e}`;
+            }
+            const res = await fetch(url, {
+                signal: AbortSignal.timeout(15_000)
+            });
+            if (!res.ok) return [];
+            const data = (await res.json()) as WyzieSubtitle[];
+            if (!Array.isArray(data)) return [];
+            return data
+                .filter((s) => s.url)
+                .map((s) => ({
+                    url: this.createProxyUrl(s.url, this.HEADERS),
+                    label: s.display || s.language || 'Unknown',
+                    format: this.detectSubtitleFormat(s.url, s.format)
+                }));
+        } catch {
+            return [];
+        }
     }
 
-    private detectSubtitleFormat(
-        url: string,
-        hint?: string
-    ): 'vtt' | 'srt' | 'ass' | 'ssa' | 'ttml' {
+    private detectSubtitleFormat(url: string, hint?: string): SubtitleFormat {
         const haystack = `${hint ?? ''} ${url}`.toLowerCase();
         if (haystack.includes('srt')) return 'srt';
         if (haystack.includes('ssa')) return 'ssa';
@@ -291,27 +154,9 @@ export class HexaProvider extends BaseProvider {
         return 'vtt';
     }
 
-    private dedupeSources(sources: Source[]): Source[] {
-        const seen = new Set<string>();
-        const out: Source[] = [];
-        for (const s of sources) {
-            if (seen.has(s.url)) continue;
-            seen.add(s.url);
-            out.push(s);
-        }
-        return out;
-    }
-
-    private dedupeSubtitles(subtitles: Subtitle[]): Subtitle[] {
-        const seen = new Set<string>();
-        const out: Subtitle[] = [];
-        for (const sub of subtitles) {
-            const key = `${sub.label}:${sub.url}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            out.push(sub);
-        }
-        return out;
+    private titleCase(s: string): string {
+        if (!s) return s;
+        return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
     }
 
     private emptyResult(message: string): ProviderResult {
@@ -331,10 +176,10 @@ export class HexaProvider extends BaseProvider {
 
     async healthCheck(): Promise<boolean> {
         try {
-            const res = await fetch(this.SITE_URL, {
+            const res = await fetch(this.BASE_URL, {
                 method: 'HEAD',
                 headers: this.HEADERS,
-                signal: AbortSignal.timeout(this.TIMEOUT_MS)
+                signal: AbortSignal.timeout(10_000)
             });
             return res.status < 500;
         } catch {

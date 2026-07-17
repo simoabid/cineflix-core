@@ -137,6 +137,9 @@ export class LookmovieProvider extends BaseProvider {
         id: string,
         media: ProviderMediaObject
     ): Promise<{ playlist: string | null; subtitles: Subtitle[] }> {
+        // Movies are public; episode view requires Bearer auth
+        // (WWW-Authenticate: Bearer realm="api") and guest tokens are not
+        // issued. Download APIs also require a logged-in user.
         const path = media.type === 'tv' ? '/v1/episodes/view' : '/v1/movies/view';
         const data = await this.fetchJson<LookmovieStreamsResult>(
             `${API_BASE_URL}${path}?expand=streams,subtitles&id=${id}`
@@ -178,10 +181,21 @@ export class LookmovieProvider extends BaseProvider {
 
     private async fetchJson<T>(url: string): Promise<T> {
         const res = await fetch(url, {
-            headers: this.HEADERS,
+            headers: {
+                ...this.HEADERS,
+                Accept: 'application/json, text/plain, */*',
+                Origin: 'https://www.lookmovie2.to'
+            },
             signal: AbortSignal.timeout(15000)
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+        if (!res.ok) {
+            if (res.status === 401 && url.includes('/episodes/')) {
+                throw new Error(
+                    `HTTP 401 for episode streams (Bearer auth required; TV needs a logged-in LookMovie account). ${url}`
+                );
+            }
+            throw new Error(`HTTP ${res.status} for ${url}`);
+        }
         return res.json() as Promise<T>;
     }
 
