@@ -8,6 +8,11 @@ import path from 'node:path';
 import { knownThirdPartyProxies } from './thirdPartyProxies.js';
 import { streamPatterns } from './streamPatterns.js';
 import { logScrapeProxyStatus } from './utils/scrapeFetch.js';
+import {
+    buildProgressiveMedia,
+    listProvidersWithPriority,
+    scrapeSingleProvider
+} from './progressiveScrape.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,16 +88,110 @@ async function main() {
     const registry = server.getRegistry();
     await registry.discoverProviders(path.join(__dirname, './providers/'));
 
-    // Register custom route to expose provider list
+    // Register custom routes: provider list + progressive single-provider scrape
     const fastifyApp = server.getInstance();
-    fastifyApp.get('/v1/providers', async (request, reply) => {
-        const providers = registry.getProviders().map((p: any) => ({
-            id: p.id,
-            name: p.name,
-            enabled: p.enabled
-        }));
-        return reply.code(200).send(providers);
+    fastifyApp.get('/v1/providers', async (_request, reply) => {
+        return reply.code(200).send(listProvidersWithPriority(registry));
     });
+
+    // Progressive scrape: one provider only (SPA waterfall / on-demand switch)
+    fastifyApp.get<{
+        Params: { tmdbId: string; providerId: string };
+    }>('/v1/movies/:tmdbId/providers/:providerId', async (request, reply) => {
+        const { tmdbId, providerId } = request.params;
+        try {
+            const media = await buildProgressiveMedia('movie', tmdbId);
+            const result = await scrapeSingleProvider(
+                registry,
+                providerId,
+                media
+            );
+            return reply.code(200).send({
+                sources: result.sources,
+                subtitles: result.subtitles,
+                diagnostics: result.diagnostics,
+                providerId: result.providerId,
+                providerName: result.providerName,
+                durationMs: result.durationMs
+            });
+        } catch (err) {
+            const status =
+                (err as Error & { statusCode?: number }).statusCode ?? 500;
+            const message =
+                err instanceof Error ? err.message : 'Unknown error';
+            return reply.code(status).send({
+                sources: [],
+                subtitles: [],
+                diagnostics: [
+                    {
+                        code: 'PROVIDER_ERROR',
+                        message,
+                        field: '',
+                        severity: 'error'
+                    }
+                ],
+                error: message
+            });
+        }
+    });
+
+    fastifyApp.get<{
+        Params: {
+            tmdbId: string;
+            season: string;
+            episode: string;
+            providerId: string;
+        };
+    }>(
+        '/v1/tv/:tmdbId/seasons/:season/episodes/:episode/providers/:providerId',
+        async (request, reply) => {
+            const { tmdbId, season, episode, providerId } = request.params;
+            const s = Number(season);
+            const e = Number(episode);
+            if (!Number.isFinite(s) || !Number.isFinite(e)) {
+                return reply.code(400).send({
+                    sources: [],
+                    subtitles: [],
+                    diagnostics: [],
+                    error: 'Invalid season or episode'
+                });
+            }
+            try {
+                const media = await buildProgressiveMedia('tv', tmdbId, s, e);
+                const result = await scrapeSingleProvider(
+                    registry,
+                    providerId,
+                    media
+                );
+                return reply.code(200).send({
+                    sources: result.sources,
+                    subtitles: result.subtitles,
+                    diagnostics: result.diagnostics,
+                    providerId: result.providerId,
+                    providerName: result.providerName,
+                    durationMs: result.durationMs
+                });
+            } catch (err) {
+                const status =
+                    (err as Error & { statusCode?: number }).statusCode ?? 500;
+                const message =
+                    err instanceof Error ? err.message : 'Unknown error';
+                return reply.code(status).send({
+                    sources: [],
+                    subtitles: [],
+                    diagnostics: [
+                        {
+                            code: 'PROVIDER_ERROR',
+                            message,
+                            field: '',
+                            severity: 'error'
+                        }
+                    ],
+                    error: message
+                });
+            }
+        }
+    );
 
     await server.start();
 

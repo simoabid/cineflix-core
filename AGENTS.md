@@ -12,6 +12,11 @@ CinePro Core is an OMSS-compliant streaming backend built on `@omss/framework`. 
 
 **Option B (scrape egress):** Set `PROXY_URL` (or `SCRAPE_PROXY_URL`) to a residential HTTP proxy. LookMovie, VixSrc, VidKing, and 111Movies/Vidlove force proxy on scrapes; other hosts use the allowlist. `SCRAPE_PROXY_STREAM=true` (default) also routes allowlisted CDN fetches from OMSS `/v1/proxy` through the same egress.
 
+**Progressive scrape (TTFP):** SPA does **not** wait for bulk `GET /v1/movies/:id` on watch. It waterfalls best→worst via:
+- `GET /v1/movies/:tmdbId/providers/:providerId`
+- `GET /v1/tv/:tmdbId/seasons/:s/episodes/:e/providers/:providerId`
+Priority list: `src/providerPriority.ts` (keep in sync with frontend `src/config/scrapePriority.ts`). Bulk all-providers routes remain for debug/admin.
+
 ## Build, Test, and Development Commands
 
 | Command | Purpose |
