@@ -45,11 +45,21 @@ export class IcefyProvider extends BaseProvider {
             });
 
             if (!response.ok) {
+                let body = '';
+                try {
+                    body = (await response.text())
+                        .replace(/\s+/g, ' ')
+                        .slice(0, 200);
+                } catch {
+                    /* ignore */
+                }
+                const cfHint =
+                    response.status === 403
+                        ? ` (probably blocked by Cloudflare. If you are running it locally, try going to ${this.BASE_URL} and solving the CAPTCHA manually. That should fix it.)`
+                        : '';
                 throw new Error(
-                    `API request failed with status ${response.status}` +
-                        (response.status === 403
-                            ? ` (probably blocked by Cloudflare. If you are running it locally, try going to ${this.BASE_URL} and solving the CAPTCHA manually. That should fix it.)`
-                            : '')
+                    `API request failed with status ${response.status}${cfHint}` +
+                        (body ? ` :: ${body}` : '')
                 );
             }
 
