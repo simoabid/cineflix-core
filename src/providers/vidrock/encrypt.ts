@@ -5,6 +5,10 @@
  * Key is a fixed hex string from the frontend bundle; IV is the first
  * 12 bytes of the base64url-decoded payload; remainder is ciphertext+tag.
  */
+import { webcrypto } from 'node:crypto';
+
+const { subtle } = webcrypto;
+
 const KEY_HEX =
     '7f3e9c2a8b5d1f4e6a9c3b7d2e5f8a1c4b6d9e2f5a8c1b4d7e9f2a5c8b1d4e7f';
 
@@ -27,14 +31,21 @@ function base64UrlToBytes(input: string): Uint8Array {
     return new Uint8Array(Buffer.from(b64, 'base64'));
 }
 
-let cachedKey: CryptoKey | null = null;
+/** Copy into a standalone ArrayBuffer (avoids SharedArrayBuffer typing issues). */
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    return copy.buffer;
+}
 
-async function getAesGcmKey(): Promise<CryptoKey> {
+let cachedKey: webcrypto.CryptoKey | null = null;
+
+async function getAesGcmKey(): Promise<webcrypto.CryptoKey> {
     if (cachedKey) return cachedKey;
     const raw = hexToBytes(KEY_HEX);
-    cachedKey = await crypto.subtle.importKey(
+    cachedKey = await subtle.importKey(
         'raw',
-        raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength),
+        toArrayBuffer(raw),
         { name: 'AES-GCM' },
         false,
         ['decrypt']
@@ -43,9 +54,7 @@ async function getAesGcmKey(): Promise<CryptoKey> {
 }
 
 /** Decrypt a VidRock stream URL field (base64url AES-GCM blob). */
-export async function decryptStreamUrl(
-    ciphertext: string
-): Promise<string> {
+export async function decryptStreamUrl(ciphertext: string): Promise<string> {
     const raw = base64UrlToBytes(ciphertext);
     if (raw.length < 28) {
         throw new Error('Ciphertext too short');
@@ -53,13 +62,13 @@ export async function decryptStreamUrl(
     const iv = raw.slice(0, 12);
     const data = raw.slice(12);
     const key = await getAesGcmKey();
-    const plain = await crypto.subtle.decrypt(
+    const plain = await subtle.decrypt(
         {
             name: 'AES-GCM',
-            iv: iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength)
+            iv: toArrayBuffer(iv)
         },
         key,
-        data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+        toArrayBuffer(data)
     );
     return new TextDecoder().decode(plain);
 }
