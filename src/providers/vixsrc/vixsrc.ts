@@ -6,6 +6,7 @@ import type {
     Source,
     Subtitle
 } from '@omss/framework';
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
 import { VixSrcApiResponse } from './vixsrc.types.js';
 
 export class VixSrcProvider extends BaseProvider {
@@ -110,8 +111,11 @@ export class VixSrcProvider extends BaseProvider {
      */
     private async fetchApi(url: string): Promise<VixSrcApiResponse | null> {
         try {
-            const response = await fetch(url, {
-                headers: this.HEADERS
+            // Option B: vixsrc.to fails fast from AWS — scrape egress proxy.
+            const response = await scrapeFetch(url, {
+                headers: this.HEADERS,
+                timeoutMs: 15_000,
+                viaProxy: true
             });
 
             if (response.status !== 200) {
@@ -126,8 +130,10 @@ export class VixSrcProvider extends BaseProvider {
 
     private async fetchPage(suburl: string): Promise<string | null> {
         try {
-            const response = await fetch(this.BASE_URL + suburl, {
-                headers: this.HEADERS
+            const response = await scrapeFetch(this.BASE_URL + suburl, {
+                headers: this.HEADERS,
+                timeoutMs: 15_000,
+                viaProxy: true
             });
 
             if (response.status !== 200) {
@@ -191,11 +197,13 @@ export class VixSrcProvider extends BaseProvider {
         media: ProviderMediaObject
     ): Promise<string | null> {
         try {
-            const response = await fetch(url, {
+            const response = await scrapeFetch(url, {
                 headers: {
                     ...this.HEADERS,
                     Referer: referer
-                }
+                },
+                timeoutMs: 15_000,
+                viaProxy: true
             });
 
             if (response.status !== 200) {
@@ -373,9 +381,11 @@ export class VixSrcProvider extends BaseProvider {
      */
     async healthCheck(): Promise<boolean> {
         try {
-            const response = await fetch(this.BASE_URL, {
+            const response = await scrapeFetch(this.BASE_URL, {
                 method: 'HEAD',
-                headers: this.HEADERS
+                headers: this.HEADERS,
+                timeoutMs: 10_000,
+                viaProxy: true
             });
             return response.status === 200;
         } catch {

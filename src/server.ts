@@ -1,12 +1,13 @@
 import 'dotenv/config';
 // Must load before any proxy requests: fixes host-without-scheme HLS URIs
-// used by VidKing Oxygen (interkh.com child playlists).
+// used by VidKing Oxygen (interkh.com child playlists) + Option B egress.
 import './proxyResolvePatch.js';
 import { OMSSServer } from '@omss/framework';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { knownThirdPartyProxies } from './thirdPartyProxies.js';
 import { streamPatterns } from './streamPatterns.js';
+import { logScrapeProxyStatus } from './utils/scrapeFetch.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -94,6 +95,9 @@ async function main() {
     });
 
     await server.start();
+
+    // Option B: residential scrape egress (PROXY_URL) for IP-blocked hosts.
+    logScrapeProxyStatus();
 
     const publicUrl =
         process.env.PUBLIC_URL ??

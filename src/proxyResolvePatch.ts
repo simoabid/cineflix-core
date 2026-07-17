@@ -8,8 +8,16 @@
  * 2) Hydrogen disguises real MPEG-TS segments as file000.html / file001.jpg
  *    under /r2/cdn* with Content-Type: text/html. Force video/mp2t so hls.js
  *    will demux them.
+ *
+ * 3) Option B scrape egress: when SCRAPE_PROXY_STREAM is on (default) and the
+ *    upstream host is allowlisted / mode=all, fetch via residential PROXY_URL
+ *    so AWS-hosted /v1/proxy can pull playlists & segments that 403/410 direct.
  */
 import { ProxyService } from '@omss/framework';
+import {
+    isScrapeProxyStreamEnabled,
+    scrapeFetch
+} from './utils/scrapeFetch.js';
 
 /**
  * host.tld/path... only — requires a slash after the host so that
@@ -103,7 +111,32 @@ type HandleBufferedFn = (proxyData: {
 const protoAny = ProxyService.prototype as unknown as {
     handleStreamingRequest?: HandleStreamingFn;
     handleBufferedRequest?: HandleBufferedFn;
+    fetchWithTimeout?: (
+        url: string,
+        init: RequestInit,
+        timeoutMs?: number
+    ) => Promise<Response>;
 };
+
+// Option B: route allowlisted CDN fetches through scrape egress proxy.
+if (typeof protoAny.fetchWithTimeout === 'function') {
+    const origFetch = protoAny.fetchWithTimeout;
+    protoAny.fetchWithTimeout = async function patchedFetchWithTimeout(
+        this: unknown,
+        url: string,
+        init: RequestInit,
+        timeoutMs = 30_000
+    ): Promise<Response> {
+        if (isScrapeProxyStreamEnabled()) {
+            return scrapeFetch(url, {
+                ...init,
+                timeoutMs,
+                viaProxy: 'auto'
+            });
+        }
+        return origFetch.call(this, url, init, timeoutMs);
+    };
+}
 
 function forceVideoContentType(url: string, contentType: string): string {
     if (DISGUISED_TS.test(url) || /\.ts(?:\?|$)/i.test(url)) {

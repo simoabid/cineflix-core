@@ -6,6 +6,7 @@ import type {
     Source,
     Subtitle
 } from '@omss/framework';
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
 import type {
     LookmovieSearchResult,
     LookmovieStreamsResult,
@@ -39,8 +40,11 @@ export class LookmovieProvider extends BaseProvider {
 
             const match = searchRes?.items?.find(
                 (item) =>
-                    item.title?.toLowerCase().includes(media.title.toLowerCase()) &&
-                    (!media.releaseYear || String(item.year) === media.releaseYear)
+                    item.title
+                        ?.toLowerCase()
+                        .includes(media.title.toLowerCase()) &&
+                    (!media.releaseYear ||
+                        String(item.year) === media.releaseYear)
             );
 
             if (!match?.id_movie) {
@@ -80,8 +84,11 @@ export class LookmovieProvider extends BaseProvider {
 
             const match = searchRes?.items?.find(
                 (item) =>
-                    item.title?.toLowerCase().includes(media.title.toLowerCase()) &&
-                    (!media.releaseYear || String(item.year) === media.releaseYear)
+                    item.title
+                        ?.toLowerCase()
+                        .includes(media.title.toLowerCase()) &&
+                    (!media.releaseYear ||
+                        String(item.year) === media.releaseYear)
             );
 
             if (!match?.id_show) {
@@ -140,7 +147,8 @@ export class LookmovieProvider extends BaseProvider {
         // Movies are public; episode view requires Bearer auth
         // (WWW-Authenticate: Bearer realm="api") and guest tokens are not
         // issued. Download APIs also require a logged-in user.
-        const path = media.type === 'tv' ? '/v1/episodes/view' : '/v1/movies/view';
+        const path =
+            media.type === 'tv' ? '/v1/episodes/view' : '/v1/movies/view';
         const data = await this.fetchJson<LookmovieStreamsResult>(
             `${API_BASE_URL}${path}?expand=streams,subtitles&id=${id}`
         );
@@ -180,13 +188,15 @@ export class LookmovieProvider extends BaseProvider {
     }
 
     private async fetchJson<T>(url: string): Promise<T> {
-        const res = await fetch(url, {
+        // Option B: lmscript.xyz 403s AWS IPs — route via scrape egress proxy.
+        const res = await scrapeFetch(url, {
             headers: {
                 ...this.HEADERS,
                 Accept: 'application/json, text/plain, */*',
                 Origin: 'https://www.lookmovie2.to'
             },
-            signal: AbortSignal.timeout(15000)
+            timeoutMs: 15_000,
+            viaProxy: true
         });
         if (!res.ok) {
             if (res.status === 401 && url.includes('/episodes/')) {

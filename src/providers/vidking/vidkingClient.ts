@@ -12,6 +12,7 @@
  * Returns real CDN URLs (.m3u8 / .mpd / progressive). No ads — we never touch
  * the iframe embed path.
  */
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
 import { decryptVidkingPayload } from './vidkingCrypto.js';
 import type {
     VidkingApiSource,
@@ -122,11 +123,13 @@ async function fetchSeed(mediaId: string, timeoutMs: number): Promise<string> {
         return cached.seed;
     }
 
-    const res = await fetch(
+    // Option B: force egress proxy — API + CDNs block AWS IPs (403/410/429).
+    const res = await scrapeFetch(
         `${API_BASE}/seed?mediaId=${encodeURIComponent(mediaId)}`,
         {
             headers: BROWSER_HEADERS,
-            signal: AbortSignal.timeout(timeoutMs)
+            timeoutMs,
+            viaProxy: true
         }
     );
     if (!res.ok) {
@@ -163,11 +166,12 @@ async function resolveMeta(
     }
 
     const pathType = media.type === 'tv' ? 'tv' : 'movie';
-    const res = await fetch(
+    const res = await scrapeFetch(
         `${TMDB_PROXY}/${pathType}/${media.tmdbId}?append_to_response=external_ids`,
         {
             headers: BROWSER_HEADERS,
-            signal: AbortSignal.timeout(timeoutMs)
+            timeoutMs,
+            viaProxy: true
         }
     );
     if (!res.ok) {
@@ -359,10 +363,11 @@ async function filterPlayableSources(
                     src.type === 'mp4' ||
                     (src.url.includes('.mp4') && !src.url.includes('m3u8'))
                 ) {
-                    const res = await fetch(src.url, {
+                    const res = await scrapeFetch(src.url, {
                         method: 'HEAD',
                         headers: STREAM_PROBE_HEADERS,
-                        signal: AbortSignal.timeout(timeoutMs)
+                        timeoutMs,
+                        viaProxy: true
                     });
                     if (res.ok || res.status === 405) return src;
                     diagnostics.push(
@@ -371,9 +376,10 @@ async function filterPlayableSources(
                     return null;
                 }
 
-                const res = await fetch(src.url, {
+                const res = await scrapeFetch(src.url, {
                     headers: STREAM_PROBE_HEADERS,
-                    signal: AbortSignal.timeout(timeoutMs)
+                    timeoutMs,
+                    viaProxy: true
                 });
                 if (!res.ok) {
                     diagnostics.push(
@@ -400,9 +406,10 @@ async function filterPlayableSources(
                 if (!firstRef) return null;
 
                 const firstUrl = absRef(src.url, firstRef);
-                const segRes = await fetch(firstUrl, {
+                const segRes = await scrapeFetch(firstUrl, {
                     headers: STREAM_PROBE_HEADERS,
-                    signal: AbortSignal.timeout(timeoutMs)
+                    timeoutMs,
+                    viaProxy: true
                 });
 
                 // Nested master/quality m3u8: recurse one level for a real segment
@@ -432,9 +439,10 @@ async function filterPlayableSources(
                         return null;
                     }
                     const segUrl = absRef(firstUrl, segRef);
-                    const bodyRes = await fetch(segUrl, {
+                    const bodyRes = await scrapeFetch(segUrl, {
                         headers: STREAM_PROBE_HEADERS,
-                        signal: AbortSignal.timeout(timeoutMs)
+                        timeoutMs,
+                        viaProxy: true
                     });
                     if (!bodyRes.ok) {
                         diagnostics.push(
@@ -502,14 +510,15 @@ async function fetchServerOnce(
     subtitles: VidkingApiSubtitle[];
 }> {
     const url = buildSourceUrl(server.endpoint, meta, media, seed);
-    const res = await fetch(url, {
+    const res = await scrapeFetch(url, {
         headers: {
             ...BROWSER_HEADERS,
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             Pragma: 'no-cache',
             Expires: '0'
         },
-        signal: AbortSignal.timeout(timeoutMs)
+        timeoutMs,
+        viaProxy: true
     });
 
     if (res.status === 401) {
@@ -671,9 +680,10 @@ export async function fetchVidkingSubtitles(
         url += `&season=${season}&episode=${episode}`;
     }
     try {
-        const res = await fetch(url, {
+        const res = await scrapeFetch(url, {
             headers: BROWSER_HEADERS,
-            signal: AbortSignal.timeout(timeoutMs)
+            timeoutMs,
+            viaProxy: true
         });
         if (!res.ok) return [];
         const data = (await res.json()) as VidkingApiSubtitle[];

@@ -1,17 +1,19 @@
 import * as cheerio from 'cheerio';
+import { scrapeFetch, type ScrapeFetchInit } from './scrapeFetch.js';
 
 /**
  * Fetch HTML and return cheerio-loaded document.
  * Returns null on any failure (network error, non-OK status, etc.).
+ * Uses scrape egress proxy (Option B) when host is allowlisted.
  */
 export async function fetchHtml(
     url: string,
     headers?: Record<string, string>
 ): Promise<cheerio.CheerioAPI | null> {
     try {
-        const res = await fetch(url, {
+        const res = await scrapeFetch(url, {
             headers: headers ?? {},
-            signal: AbortSignal.timeout(15_000),
+            timeoutMs: 15_000
         });
         if (!res.ok) return null;
         const html = await res.text();
@@ -28,13 +30,13 @@ export async function fetchHtml(
 export async function fetchJson<T = unknown>(
     url: string,
     headers?: Record<string, string>,
-    init?: RequestInit
+    init?: ScrapeFetchInit
 ): Promise<T | null> {
     try {
-        const res = await fetch(url, {
+        const res = await scrapeFetch(url, {
             headers: { 'Content-Type': 'application/json', ...headers },
-            signal: AbortSignal.timeout(15_000),
-            ...init,
+            timeoutMs: 15_000,
+            ...init
         });
         if (!res.ok) return null;
         return (await res.json()) as T;
@@ -50,13 +52,13 @@ export async function fetchJson<T = unknown>(
 export async function fetchText(
     url: string,
     headers?: Record<string, string>,
-    init?: RequestInit
+    init?: ScrapeFetchInit
 ): Promise<string | null> {
     try {
-        const res = await fetch(url, {
+        const res = await scrapeFetch(url, {
             headers: headers ?? {},
-            signal: AbortSignal.timeout(15_000),
-            ...init,
+            timeoutMs: 15_000,
+            ...init
         });
         if (!res.ok) return null;
         return await res.text();
@@ -74,7 +76,7 @@ export function extractStreamUrls(html: string): string[] {
         /(?:file|src|url|source|stream|playlist)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)/gi,
         /(?:file|src|url|source|stream)\s*[:=]\s*["']([^"']+\.mp4[^"']*)/gi,
         /https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/gi,
-        /https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/gi,
+        /https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/gi
     ];
     const urls = new Set<string>();
     for (const pattern of patterns) {
@@ -98,9 +100,7 @@ export function extractIframeSrc(html: string): string | null {
  * Normalize a quality string/number to a standard format like "720p", "1080p", etc.
  * Returns "unknown" if the quality cannot be determined.
  */
-export function normalizeQuality(
-    quality: string | number | undefined
-): string {
+export function normalizeQuality(quality: string | number | undefined): string {
     if (quality === undefined || quality === null) return 'unknown';
     const q = quality.toString().toLowerCase().trim();
     if (/^(2160|4k|uhd)/.test(q)) return '2160p';

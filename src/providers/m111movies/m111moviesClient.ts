@@ -9,6 +9,7 @@
  *
  * Methodology: docs/SCRAPING-MASTERCLASS.md §2 (SPA recon → reproduce → decode).
  */
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
 import type {
     M111ResolveResult,
     M111Server,
@@ -66,14 +67,16 @@ async function mintRequestToken(origin: string = API_HOST): Promise<string> {
         return cached.token;
     }
 
-    const res = await fetch(`${origin}/auth/generate-token`, {
+    // Option B: generate-token returns HTTP 403 from AWS — residential egress.
+    const res = await scrapeFetch(`${origin}/auth/generate-token`, {
         method: 'POST',
         headers: {
             ...BROWSER_HEADERS,
             'Content-Type': 'application/json'
         },
         body: JSON.stringify({ clientData: {} }),
-        signal: AbortSignal.timeout(15_000)
+        timeoutMs: 15_000,
+        viaProxy: true
     });
     if (!res.ok) {
         throw new Error(`auth generate-token HTTP ${res.status}`);
@@ -213,13 +216,14 @@ async function fetchServer(
     token: string
 ): Promise<{ sources: M111StreamSource[]; subtitles: M111Subtitle[] } | null> {
     const url = buildApiUrl(server, media);
-    const res = await fetch(url, {
+    const res = await scrapeFetch(url, {
         headers: {
             ...BROWSER_HEADERS,
             'x-request-token': token,
             'x-response-encryption': 'aes-gcm'
         },
-        signal: AbortSignal.timeout(25_000)
+        timeoutMs: 25_000,
+        viaProxy: true
     });
     if (!res.ok) return null;
 
@@ -256,9 +260,10 @@ export async function fetchSubtitles(media: Media): Promise<M111Subtitle[]> {
         ) {
             url += `&season=${media.season}&episode=${media.episode}`;
         }
-        const res = await fetch(url, {
+        const res = await scrapeFetch(url, {
             headers: BROWSER_HEADERS,
-            signal: AbortSignal.timeout(12_000)
+            timeoutMs: 12_000,
+            viaProxy: 'auto'
         });
         if (!res.ok) return [];
         const data = (await res.json()) as Array<{

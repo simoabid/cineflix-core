@@ -8,7 +8,9 @@ CinePro Core is an OMSS-compliant streaming backend built on `@omss/framework`. 
 
 **14 embed resolvers** in `src/utils/embeds/` (filemoon, voe, dood, streamtape, streamwish, dropload, supervideo, ridoo, turbovid, vidnest, zunime, animetsu, animekai, myanime) are shared across providers that resolve embed URLs. A barrel `index.ts` exports all resolvers and their types.
 
-**Shared utilities** in `src/utils/`: `scraping.ts` (HTTP/HTML helpers), `crypto.ts` (decryption primitives), `ua.ts` (user-agent pool), `jsunpack.ts` (JS unpacker). `src/thirdPartyProxies.ts` and `src/streamPatterns.ts` configure framework proxy-removal and stream URL matching.
+**Shared utilities** in `src/utils/`: `scraping.ts` (HTTP/HTML helpers), `scrapeFetch.ts` (Option B scrape egress via `PROXY_URL` / residential proxy for IP-blocked hosts), `crypto.ts` (decryption primitives), `ua.ts` (user-agent pool), `jsunpack.ts` (JS unpacker). `src/thirdPartyProxies.ts` and `src/streamPatterns.ts` configure framework proxy-removal and stream URL matching.
+
+**Option B (scrape egress):** Set `PROXY_URL` (or `SCRAPE_PROXY_URL`) to a residential HTTP proxy. LookMovie, VixSrc, VidKing, and 111Movies/Vidlove force proxy on scrapes; other hosts use the allowlist. `SCRAPE_PROXY_STREAM=true` (default) also routes allowlisted CDN fetches from OMSS `/v1/proxy` through the same egress.
 
 ## Build, Test, and Development Commands
 

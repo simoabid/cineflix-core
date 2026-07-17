@@ -15,6 +15,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BaseProvider } from '@omss/framework';
 import type { ProviderResult } from '@omss/framework';
+import {
+    getScrapeProxyStatus,
+    logScrapeProxyStatus
+} from './utils/scrapeFetch.js';
 
 // ANSI color codes
 const GREEN = '\x1b[32m';
@@ -109,9 +113,7 @@ function summarizeEmpty(result: ProviderResult): string {
     const errors = (result.diagnostics ?? []).filter(
         (d) => d.severity === 'error' && d.message
     );
-    const pick = errors.length
-        ? errors.map((d) => d.message!)
-        : msgs;
+    const pick = errors.length ? errors.map((d) => d.message!) : msgs;
     return pick.slice(0, 3).join(' | ');
 }
 
@@ -132,12 +134,16 @@ function classifyFailure(
         return ms < FAST_FAIL_MS ? 'ip_or_bot_block' : 'empty_unknown';
     }
 
-    if (/timeout\s*\(/i.test(error || '') || e.includes('aborted') && e.includes('timeout')) {
+    if (
+        /timeout\s*\(/i.test(error || '') ||
+        (e.includes('aborted') && e.includes('timeout'))
+    ) {
         return 'timeout';
     }
     if (
         e.includes('etimedout') ||
-        e.includes('timeout') && (e.includes('fetch') || e.includes('network'))
+        (e.includes('timeout') &&
+            (e.includes('fetch') || e.includes('network')))
     ) {
         return 'timeout';
     }
@@ -201,7 +207,7 @@ function classifyFailure(
         e.includes('cap instr') ||
         e.includes('wasm') ||
         e.includes('invalid gcm') ||
-        e.includes('module ') && e.includes('not found')
+        (e.includes('module ') && e.includes('not found'))
     ) {
         return 'crypto_or_decrypt';
     }
@@ -269,7 +275,9 @@ function classifyFailure(
 }
 
 function pickPrimaryFailure(calls: MediaCall[]): FailureClass | null {
-    const failed = calls.filter((c) => c.failureClass !== 'ok' && c.failureClass !== 'skip');
+    const failed = calls.filter(
+        (c) => c.failureClass !== 'ok' && c.failureClass !== 'skip'
+    );
     if (failed.length === 0) return null;
     // Prefer non-empty_unknown classes that explain "why"
     const priority: FailureClass[] = [
@@ -347,7 +355,11 @@ async function discoverProviders(): Promise<BaseProvider[]> {
             }
             if (f.includes('mapper')) return false;
             if (f.includes('Crypto') || f.includes('crypto')) return false;
-            if (f.includes('Client') || f.includes('VM') || f.includes('Wasm')) {
+            if (
+                f.includes('Client') ||
+                f.includes('VM') ||
+                f.includes('Wasm')
+            ) {
                 // Keep main provider file only (e.g. m111movies.ts not *Client*)
                 if (f !== `${entry.name}${ext}`) return false;
             }
@@ -478,8 +490,9 @@ async function runMediaCall(
 async function testProvider(provider: BaseProvider): Promise<TestResult> {
     const start = Date.now();
     // Silence provider console noise so diagnostics stay readable
-    const cons = (provider as unknown as { console?: { log?: (...a: unknown[]) => void } })
-        .console;
+    const cons = (
+        provider as unknown as { console?: { log?: (...a: unknown[]) => void } }
+    ).console;
     if (cons && typeof cons.log === 'function') {
         cons.log = () => {};
     }
@@ -506,11 +519,7 @@ function truncate(s: string, n: number): string {
 }
 
 function printResult(result: TestResult) {
-    const statusColor = !result.enabled
-        ? YELLOW
-        : result.working
-          ? GREEN
-          : RED;
+    const statusColor = !result.enabled ? YELLOW : result.working ? GREEN : RED;
     const statusText = !result.enabled
         ? 'DISABLED'
         : result.working
@@ -553,9 +562,7 @@ function printResult(result: TestResult) {
         console.log(`  ${DIM}   │  ${msg}${RESET}`);
         if (call.diagnostics.length > 1) {
             for (const d of call.diagnostics.slice(1, 4)) {
-                console.log(
-                    `  ${DIM}   │  + ${truncate(d, 120)}${RESET}`
-                );
+                console.log(`  ${DIM}   │  + ${truncate(d, 120)}${RESET}`);
             }
         }
     }
@@ -576,9 +583,7 @@ function printFailureBuckets(failed: TestResult[]) {
     console.log(
         `${DIM}Use this to split EC2 vs laptop: IP/BOT_BLOCK + NETWORK/DNS/TLS ≈ egress;`
     );
-    console.log(
-        `catalog/auth/crypto/timeout need different fixes.${RESET}\n`
-    );
+    console.log(`catalog/auth/crypto/timeout need different fixes.${RESET}\n`);
 
     const order: FailureClass[] = [
         'ip_or_bot_block',
@@ -602,7 +607,10 @@ function printFailureBuckets(failed: TestResult[]) {
         for (const r of list) {
             const detail =
                 r.calls
-                    .filter((c) => c.failureClass !== 'ok' && c.failureClass !== 'skip')
+                    .filter(
+                        (c) =>
+                            c.failureClass !== 'ok' && c.failureClass !== 'skip'
+                    )
                     .map(
                         (c) =>
                             `${c.kind}:${c.ms}ms ${truncate(c.error || '', 80)}`
@@ -651,6 +659,17 @@ async function main() {
     console.log(
         `${DIM}CAVEAT: resolve ≠ playback · local egress ≠ EC2. Classification is heuristic.${RESET}\n`
     );
+    logScrapeProxyStatus();
+    const proxyStatus = getScrapeProxyStatus();
+    if (proxyStatus.enabled) {
+        console.log(
+            `${DIM}Option B: scrapes for allowlisted hosts go via ${proxyStatus.proxyDisplay}${RESET}\n`
+        );
+    } else {
+        console.log(
+            `${DIM}Option B: scrape egress OFF — IP-blocked hosts will fail on EC2${RESET}\n`
+        );
+    }
 
     console.log(`${DIM}Discovering providers...${RESET}`);
     const providers = await discoverProviders();
@@ -724,10 +743,7 @@ async function main() {
     if (working.length > 0) {
         console.log(`${GREEN}${BOLD}Working providers:${RESET}`);
         for (const r of working) {
-            const sources = Math.max(
-                ...r.calls.map((c) => c.sources),
-                0
-            );
+            const sources = Math.max(...r.calls.map((c) => c.sources), 0);
             console.log(
                 `  ${GREEN}✓${RESET} ${r.name} ${DIM}(${r.id})${RESET} — ${sources} sources`
             );
