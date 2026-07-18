@@ -8,14 +8,7 @@ import type {
     SubtitleFormat
 } from '@omss/framework';
 import { resolveVidsrcAll } from './vidsrcClient.js';
-
-interface WyzieSubtitle {
-    url: string;
-    format?: string;
-    display?: string;
-    language?: string;
-    isHearingImpaired?: boolean;
-}
+import { searchWyzieSubtitles } from '../../subtitles/index.js';
 
 /**
  * VidSrc provider.
@@ -34,7 +27,6 @@ export class VidSrcProvider extends BaseProvider {
     readonly enabled = true;
 
     readonly BASE_URL = 'https://vidsrc.ru';
-    readonly SUBTITLE_API = 'https://sub.wyzie.ru/search';
 
     readonly HEADERS: Record<string, string> = {
         'User-Agent':
@@ -105,41 +97,24 @@ export class VidSrcProvider extends BaseProvider {
     }
 
     /**
-     * Fetch subtitles from the wyzie API (keyed by TMDB id, optional s/e).
+     * Shared Wyzie path B (multi-key rotation via WYZIE_API_KEYS on core).
      */
     private async fetchSubtitles(
         media: ProviderMediaObject
     ): Promise<Subtitle[]> {
-        try {
-            let url = `${this.SUBTITLE_API}?id=${media.tmdbId}`;
-            if (media.type === 'tv' && media.s != null && media.e != null) {
-                url += `&season=${media.s}&episode=${media.e}`;
-            }
-            const res = await fetch(url, {
-                signal: AbortSignal.timeout(15_000)
-            });
-            if (!res.ok) return [];
-            const data = (await res.json()) as WyzieSubtitle[];
-            if (!Array.isArray(data)) return [];
-
-            const seen = new Set<string>();
-            const subtitles: Subtitle[] = [];
-            for (const sub of data) {
-                if (!sub?.url || seen.has(sub.url)) continue;
-                seen.add(sub.url);
-                const label =
-                    (sub.display || sub.language || 'Unknown') +
-                    (sub.isHearingImpaired ? ' (SDH)' : '');
-                subtitles.push({
-                    url: this.createProxyUrl(sub.url, this.HEADERS),
-                    label,
-                    format: this.subtitleFormat(sub.format, sub.url)
-                });
-            }
-            return subtitles;
-        } catch {
-            return [];
-        }
+        const { subtitles } = await searchWyzieSubtitles({
+            tmdbId: media.tmdbId,
+            imdbId: media.imdbId,
+            season:
+                media.type === 'tv' && media.s != null ? media.s : undefined,
+            episode:
+                media.type === 'tv' && media.e != null ? media.e : undefined
+        });
+        return subtitles.map((sub) => ({
+            url: this.createProxyUrl(sub.url, this.HEADERS),
+            label: sub.label,
+            format: this.subtitleFormat(sub.format, sub.url)
+        }));
     }
 
     private titleCase(s: string): string {

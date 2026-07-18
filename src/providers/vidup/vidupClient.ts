@@ -27,6 +27,7 @@ import type {
     VidupSubtitle,
     WyzieSubtitle
 } from './vidup.types.js';
+import { searchWyzieSubtitles } from '../../subtitles/index.js';
 
 // ---------------------------------------------------------------------------
 // Constants (recovered from the player bundle, see RECON.md)
@@ -251,15 +252,38 @@ export function buildYthdFallbackUrl(media: VidupMedia): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch subtitles from the wyzie API.
- *
- * Vidup uses the same wyzie subtitle service as vidssrc. The endpoint is
- * `https://sub.wyzie.ru/search?id={tmdbId}[&season={s}&episode={e}]`.
+ * Fetch subtitles via shared Wyzie path B (keyed multi-rotation).
+ * Falls back to vidup.to/wyzie proxy if core has no keys yet.
  */
 export async function fetchVidupSubtitles(
     media: VidupMedia,
     headers?: Record<string, string>
 ): Promise<VidupSubtitle[]> {
+    const { subtitles, error } = await searchWyzieSubtitles({
+        tmdbId: media.tmdbId,
+        season:
+            media.type === 'tv' && media.season != null
+                ? media.season
+                : undefined,
+        episode:
+            media.type === 'tv' && media.episode != null
+                ? media.episode
+                : undefined
+    });
+    if (subtitles.length > 0) {
+        return subtitles.map((sub) => ({
+            url: sub.url,
+            label: sub.label,
+            format: detectSubtitleFormat(sub.format, sub.url),
+            language: sub.language,
+            isHearingImpaired: sub.isHearingImpaired
+        }));
+    }
+
+    // Legacy unauthenticated vidup proxy (may 401) — only when keys missing
+    if (!error?.includes('No WYZIE_API_KEYS')) {
+        return [];
+    }
     try {
         let url = `${WYZIE_API}?id=${encodeURIComponent(media.tmdbId)}`;
         if (
@@ -280,17 +304,14 @@ export async function fetchVidupSubtitles(
         if (!Array.isArray(data)) return [];
 
         const seen = new Set<string>();
-        const subtitles: VidupSubtitle[] = [];
-
+        const out: VidupSubtitle[] = [];
         for (const sub of data) {
             if (!sub?.url || seen.has(sub.url)) continue;
             seen.add(sub.url);
-
             const label =
                 (sub.display || sub.language || 'Unknown') +
                 (sub.isHearingImpaired ? ' (SDH)' : '');
-
-            subtitles.push({
+            out.push({
                 url: sub.url,
                 label,
                 format: detectSubtitleFormat(sub.format, sub.url),
@@ -298,8 +319,7 @@ export async function fetchVidupSubtitles(
                 isHearingImpaired: sub.isHearingImpaired
             });
         }
-
-        return subtitles;
+        return out;
     } catch {
         return [];
     }

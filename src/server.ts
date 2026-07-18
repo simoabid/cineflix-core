@@ -13,6 +13,11 @@ import {
     listProvidersWithPriority,
     scrapeSingleProvider
 } from './progressiveScrape.js';
+import {
+    searchWyzieSubtitles,
+    wyzieKeyCount,
+    wyzieKeyPoolSummary
+} from './subtitles/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -92,6 +97,84 @@ async function main() {
     const fastifyApp = server.getInstance();
     fastifyApp.get('/v1/providers', async (_request, reply) => {
         return reply.code(200).send(listProvidersWithPriority(registry));
+    });
+
+    /**
+     * Dedicated subtitle scrape (path B) — independent of stream providers.
+     * Uses Wyzie with multi-key rotation (WYZIE_API_KEYS on server only).
+     *
+     * GET /v1/subtitles?tmdbId=155
+     * GET /v1/subtitles?imdbId=tt0468569
+     * GET /v1/subtitles?tmdbId=1396&season=1&episode=1
+     */
+    fastifyApp.get<{
+        Querystring: {
+            tmdbId?: string;
+            imdbId?: string;
+            id?: string;
+            season?: string;
+            episode?: string;
+            s?: string;
+            e?: string;
+            language?: string;
+        };
+    }>('/v1/subtitles', async (request, reply) => {
+        const q = request.query;
+        const tmdbId = (q.tmdbId || '').trim();
+        const imdbId = (q.imdbId || '').trim();
+        const id = (q.id || '').trim();
+        // id can be either IMDB (tt…) or TMDB numeric
+        const resolvedImdb =
+            imdbId || (id.startsWith('tt') ? id : undefined);
+        const resolvedTmdb =
+            tmdbId ||
+            (!resolvedImdb && id && /^\d+$/.test(id) ? id : undefined);
+
+        if (!resolvedImdb && !resolvedTmdb) {
+            return reply.code(400).send({
+                subtitles: [],
+                error: 'Provide tmdbId, imdbId, or id query parameter'
+            });
+        }
+
+        const seasonRaw = q.season ?? q.s;
+        const episodeRaw = q.episode ?? q.e;
+        const season =
+            seasonRaw != null && seasonRaw !== ''
+                ? Number(seasonRaw)
+                : undefined;
+        const episode =
+            episodeRaw != null && episodeRaw !== ''
+                ? Number(episodeRaw)
+                : undefined;
+
+        const result = await searchWyzieSubtitles({
+            tmdbId: resolvedTmdb,
+            imdbId: resolvedImdb,
+            season:
+                season != null && Number.isFinite(season) ? season : undefined,
+            episode:
+                episode != null && Number.isFinite(episode)
+                    ? episode
+                    : undefined,
+            language: q.language
+        });
+
+        return reply.code(200).send({
+            subtitles: result.subtitles,
+            source: 'wyzie',
+            keysTried: result.keysTried,
+            keyPool: result.keyPool,
+            ...(result.error ? { error: result.error } : {})
+        });
+    });
+
+    /** Health/debug: whether subtitle keys are configured (never returns secrets). */
+    fastifyApp.get('/v1/subtitles/status', async (_request, reply) => {
+        return reply.code(200).send({
+            configured: wyzieKeyCount() > 0,
+            keyPool: wyzieKeyPoolSummary()
+        });
     });
 
     // Progressive scrape: one provider only (SPA waterfall / on-demand switch)
@@ -197,6 +280,15 @@ async function main() {
 
     // Option B: residential scrape egress (PROXY_URL) for IP-blocked hosts.
     logScrapeProxyStatus();
+
+    // Subtitle path B: Wyzie multi-key pool
+    if (wyzieKeyCount() > 0) {
+        console.log(`[subtitles] Wyzie path B ready — ${wyzieKeyPoolSummary()}`);
+    } else {
+        console.warn(
+            '[subtitles] No WYZIE_API_KEYS set — GET /v1/subtitles will return empty. Add free keys from https://store.wyzie.io/redeem'
+        );
+    }
 
     const publicUrl =
         process.env.PUBLIC_URL ??

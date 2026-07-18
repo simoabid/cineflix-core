@@ -8,14 +8,7 @@ import type {
     SubtitleFormat
 } from '@omss/framework';
 import { resolveHexaAll } from './hexaClient.js';
-
-interface WyzieSubtitle {
-    url: string;
-    format?: string;
-    display?: string;
-    language?: string;
-    isHearingImpaired?: boolean;
-}
+import { searchWyzieSubtitles } from '../../subtitles/index.js';
 
 /**
  * Hexa (hexa.su / theemoviedb.hexa.su)
@@ -50,7 +43,6 @@ export class HexaProvider extends BaseProvider {
     readonly enabled = true;
 
     readonly BASE_URL = 'https://hexa.su';
-    readonly SUBTITLE_API = 'https://sub.wyzie.ru/search';
 
     readonly HEADERS: Record<string, string> = {
         'User-Agent':
@@ -119,30 +111,23 @@ export class HexaProvider extends BaseProvider {
         }
     }
 
+    /** Shared Wyzie path B (multi-key rotation via WYZIE_API_KEYS on core). */
     private async fetchSubtitles(
         media: ProviderMediaObject
     ): Promise<Subtitle[]> {
-        try {
-            let url = `${this.SUBTITLE_API}?id=${media.tmdbId}`;
-            if (media.type === 'tv' && media.s != null && media.e != null) {
-                url += `&season=${media.s}&episode=${media.e}`;
-            }
-            const res = await fetch(url, {
-                signal: AbortSignal.timeout(15_000)
-            });
-            if (!res.ok) return [];
-            const data = (await res.json()) as WyzieSubtitle[];
-            if (!Array.isArray(data)) return [];
-            return data
-                .filter((s) => s.url)
-                .map((s) => ({
-                    url: this.createProxyUrl(s.url, this.HEADERS),
-                    label: s.display || s.language || 'Unknown',
-                    format: this.detectSubtitleFormat(s.url, s.format)
-                }));
-        } catch {
-            return [];
-        }
+        const { subtitles } = await searchWyzieSubtitles({
+            tmdbId: media.tmdbId,
+            imdbId: media.imdbId,
+            season:
+                media.type === 'tv' && media.s != null ? media.s : undefined,
+            episode:
+                media.type === 'tv' && media.e != null ? media.e : undefined
+        });
+        return subtitles.map((s) => ({
+            url: this.createProxyUrl(s.url, this.HEADERS),
+            label: s.label,
+            format: this.detectSubtitleFormat(s.url, s.format)
+        }));
     }
 
     private detectSubtitleFormat(url: string, hint?: string): SubtitleFormat {
