@@ -1,7 +1,8 @@
 /**
- * Build absolute OMSS-style proxy URLs for subtitle file downloads.
- * Same encoding as BaseProvider.createProxyUrl — browser can fetch without
- * the SPA's auth-gated /api/proxy.
+ * Build absolute browser-facing URLs for subtitle file downloads.
+ *
+ * OpenSubtitles / Wyzie Charlie must use `/v1/subtitles/file` (dedicated fetch),
+ * NOT OMSS `/v1/proxy` — the latter rewrites Anubis HTML as a fake HLS manifest.
  */
 
 const DEFAULT_SUBTITLE_HEADERS: Record<string, string> = {
@@ -12,8 +13,7 @@ const DEFAULT_SUBTITLE_HEADERS: Record<string, string> = {
 
 /**
  * OpenSubtitles free download API expects a classic subtitle client UA.
- * Browser Chrome UA often works from residential IPs; AWS still 403s —
- * residential PROXY_URL + this UA is the reliable combo.
+ * AWS IPs get Anubis 403; residential PROXY_URL is required on EC2.
  */
 const OPENSUBTITLES_HEADERS: Record<string, string> = {
     'User-Agent': 'TemporaryUserAgent',
@@ -44,37 +44,59 @@ export function getProxyBaseUrl(): string {
     if (publicUrl) return publicUrl;
     const host = process.env.HOST ?? 'localhost';
     const port = process.env.PORT ?? '3005';
-    // HOST 0.0.0.0 is not a browser-reachable origin
     const browserHost = host === '0.0.0.0' ? 'localhost' : host;
     return `http://${browserHost}:${port}`;
 }
 
-/**
- * Absolute URL: {base}/v1/proxy?data={json url+headers}
- */
-export function createSubtitleProxyUrl(
-    upstreamUrl: string,
-    headers?: Record<string, string>
-): string {
-    const hdrs = headers ?? headersForSubtitleUpstream(upstreamUrl);
-    const data = JSON.stringify({ url: upstreamUrl, headers: hdrs });
-    const encoded = encodeURIComponent(data);
-    return `${getProxyBaseUrl()}/v1/proxy?data=${encoded}`;
+function unwrapProxyDataUrl(proxied: string): string | null {
+    try {
+        const u = new URL(proxied);
+        const raw = u.searchParams.get('data');
+        if (!raw) return null;
+        const data = JSON.parse(decodeURIComponent(raw)) as { url?: string };
+        return typeof data.url === 'string' ? data.url : null;
+    } catch {
+        return null;
+    }
+}
+
+function isOpenSubtitlesUrl(url: string): boolean {
+    return /opensubtitles\.org/i.test(url);
 }
 
 /**
- * Rewrite a list of subtitle rows so each `.url` goes through core proxy.
- * Re-encodes existing proxy links if they still use a weak OpenSubtitles UA.
+ * Browser-downloadable absolute URL for one subtitle file.
+ * → `/v1/subtitles/file?url=…` (never OMSS /v1/proxy for OpenSubtitles).
  */
-export function proxySubtitleUrls<T extends { url: string }>(
-    subs: T[]
-): T[] {
+export function createSubtitleProxyUrl(upstreamUrl: string): string {
+    let target = upstreamUrl;
+
+    // Already our file endpoint
+    if (target.includes('/v1/subtitles/file?')) {
+        return target;
+    }
+
+    // Unwrap OMSS proxy wrappers (especially bad OpenSubtitles ones)
+    if (target.includes('/v1/proxy?')) {
+        const inner = unwrapProxyDataUrl(target);
+        if (inner) {
+            // Provider VTT (vdrk etc.) already works on /v1/proxy — keep it
+            if (!isOpenSubtitlesUrl(inner) && !isOpenSubtitlesUrl(target)) {
+                return target;
+            }
+            target = inner;
+        }
+    }
+
+    return `${getProxyBaseUrl()}/v1/subtitles/file?url=${encodeURIComponent(target)}`;
+}
+
+/**
+ * Rewrite a list of subtitle rows so each `.url` is browser-downloadable.
+ */
+export function proxySubtitleUrls<T extends { url: string }>(subs: T[]): T[] {
     return subs.map((sub) => {
         if (!sub.url) return sub;
-        if (sub.url.includes('/v1/proxy?')) {
-            // Already proxied by provider createProxyUrl — leave as-is
-            return sub;
-        }
         return {
             ...sub,
             url: createSubtitleProxyUrl(sub.url)

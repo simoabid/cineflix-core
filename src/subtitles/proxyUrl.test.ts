@@ -9,41 +9,46 @@ import {
     proxySubtitleUrls
 } from './proxyUrl.js';
 
-describe('subtitle proxy URL rewrite', () => {
+describe('subtitle file URL rewrite', () => {
     beforeEach(() => {
         process.env.PUBLIC_URL = 'https://core.cineflix.dev';
-        delete process.env.HOST;
-        delete process.env.PORT;
     });
 
-    it('builds absolute /v1/proxy links from PUBLIC_URL', () => {
+    it('uses /v1/subtitles/file for OpenSubtitles', () => {
         assert.equal(getProxyBaseUrl(), 'https://core.cineflix.dev');
-        const u = createSubtitleProxyUrl('https://cdn.example/en.srt');
-        assert.ok(u.startsWith('https://core.cineflix.dev/v1/proxy?data='));
-        const data = JSON.parse(
-            decodeURIComponent(new URL(u).searchParams.get('data')!)
+        const raw =
+            'https://dl.opensubtitles.org/en/download/subencoding-utf8/file/1';
+        const u = createSubtitleProxyUrl(raw);
+        assert.equal(
+            u,
+            `https://core.cineflix.dev/v1/subtitles/file?url=${encodeURIComponent(raw)}`
         );
-        assert.equal(data.url, 'https://cdn.example/en.srt');
     });
 
-    it('uses TemporaryUserAgent for OpenSubtitles hosts', () => {
-        const u = createSubtitleProxyUrl(
-            'https://dl.opensubtitles.org/en/download/file/1'
-        );
-        const data = JSON.parse(
-            decodeURIComponent(new URL(u).searchParams.get('data')!)
-        );
-        assert.equal(data.headers['User-Agent'], 'TemporaryUserAgent');
+    it('keeps vdrk-style /v1/proxy links', () => {
+        const vdrk =
+            'https://core.cineflix.dev/v1/proxy?data=%7B%22url%22%3A%22https%3A%2F%2Fcache.vdrk.site%2Fa.vtt%22%7D';
+        assert.equal(createSubtitleProxyUrl(vdrk), vdrk);
     });
 
-    it('rewrites lists and skips already-proxied urls', () => {
-        const already =
-            'https://core.cineflix.dev/v1/proxy?data=%7B%22url%22%3A%22x%22%7D';
+    it('rewrites OS links still on /v1/proxy', () => {
+        const inner =
+            'https://dl.opensubtitles.org/en/download/subencoding-utf8/file/9';
+        const bad =
+            'https://core.cineflix.dev/v1/proxy?data=' +
+            encodeURIComponent(JSON.stringify({ url: inner }));
+        const out = createSubtitleProxyUrl(bad);
+        assert.ok(out.includes('/v1/subtitles/file?url='));
+        assert.ok(out.includes(encodeURIComponent(inner)));
+    });
+
+    it('proxySubtitleUrls maps list', () => {
         const out = proxySubtitleUrls([
-            { url: 'https://cdn.example/a.srt', label: 'A' },
-            { url: already, label: 'B' }
+            {
+                url: 'https://dl.opensubtitles.org/en/download/file/1',
+                label: 'en'
+            }
         ]);
-        assert.ok(out[0]!.url.includes('/v1/proxy?data='));
-        assert.equal(out[1]!.url, already);
+        assert.ok(out[0]!.url.includes('/v1/subtitles/file?'));
     });
 });

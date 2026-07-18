@@ -103,11 +103,16 @@ export function isScrapeProxyStreamEnabled(): boolean {
 
 function parseHostSuffixes(): string[] {
     const raw = process.env.SCRAPE_PROXY_HOSTS?.trim();
-    if (!raw) return DEFAULT_PROXY_HOST_SUFFIXES;
-    return raw
-        .split(',')
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean);
+    // Always keep built-in defaults (incl. OpenSubtitles). Custom env hosts
+    // are ADDED — never replace, or Wyzie SRT downloads fall back to AWS IP
+    // and hit Anubis 403 while stream VTT still works.
+    const extra = raw
+        ? raw
+              .split(',')
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean)
+        : [];
+    return [...new Set([...DEFAULT_PROXY_HOST_SUFFIXES, ...extra])];
 }
 
 function hostMatchesSuffix(hostname: string, suffix: string): boolean {
@@ -124,6 +129,8 @@ function hostMatchesKnownPatterns(hostname: string): boolean {
     // Hydrogen / Oxygen style CDNs from VidKing recon
     if (/lookcrew/i.test(h) && h.endsWith('.site')) return true;
     if (/\.r2\.dev$/i.test(h)) return true;
+    // Subtitle CDNs (Wyzie Charlie → OpenSubtitles) always want residential
+    if (h.includes('opensubtitles.org')) return true;
     return false;
 }
 
@@ -293,26 +300,19 @@ export async function scrapeFetch(
                         undiciInit
                     )) as unknown as Response;
                 } catch (err) {
-                    // Optional direct fallback (dev / flaky proxy). Default ON so
-                    // a bad PROXY_URL does not brick laptop scrapes; EC2 with a
-                    // healthy proxy still succeeds on the first hop.
+                    // Optional direct fallback (dev / flaky proxy). Default ON
+                    // for viaProxy:'auto' only. viaProxy:true (OpenSubtitles)
+                    // must NEVER fall back to AWS direct — that hits Anubis 403.
                     const allowFallback = !/^(0|false|off|no)$/i.test(
                         (
                             process.env.SCRAPE_PROXY_FALLBACK_DIRECT ?? 'true'
                         ).trim()
                     );
-                    if (allowFallback && viaProxy !== true) {
+                    if (viaProxy === true) {
+                        throw wrapProxyError(err, urlStr);
+                    }
+                    if (allowFallback) {
                         // auto mode: fall through to direct below
-                    } else if (allowFallback && viaProxy === true) {
-                        try {
-                            return await fetch(urlStr, {
-                                ...rest,
-                                headers,
-                                signal
-                            });
-                        } catch {
-                            throw wrapProxyError(err, urlStr);
-                        }
                     } else {
                         throw wrapProxyError(err, urlStr);
                     }

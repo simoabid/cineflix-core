@@ -19,6 +19,7 @@ import {
     wyzieKeyPoolSummary
 } from './subtitles/index.js';
 import { proxySubtitleUrls } from './subtitles/proxyUrl.js';
+import { fetchSubtitleFile } from './subtitles/fetchSubtitleFile.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -180,6 +181,42 @@ async function main() {
             configured: wyzieKeyCount() > 0,
             keyPool: wyzieKeyPoolSummary()
         });
+    });
+
+    /**
+     * Download one subtitle file (plain text). Bypasses OMSS /v1/proxy so
+     * OpenSubtitles Anubis HTML is never rewritten as a fake HLS manifest.
+     * Uses residential PROXY_URL for opensubtitles.org when configured.
+     *
+     * GET /v1/subtitles/file?url=https%3A%2F%2Fdl.opensubtitles.org%2F...
+     */
+    fastifyApp.get<{
+        Querystring: { url?: string };
+    }>('/v1/subtitles/file', async (request, reply) => {
+        const raw = (request.query.url || '').trim();
+        if (!raw) {
+            return reply.code(400).type('text/plain').send('url required');
+        }
+        try {
+            const result = await fetchSubtitleFile(raw);
+            if (!result.ok) {
+                return reply
+                    .code(result.status)
+                    .type('text/plain; charset=utf-8')
+                    .send(result.error);
+            }
+            return reply
+                .code(200)
+                .header('Cache-Control', 'public, max-age=3600')
+                .type(result.contentType)
+                .send(result.body);
+        } catch (err) {
+            const status =
+                (err as Error & { statusCode?: number }).statusCode ?? 502;
+            const message =
+                err instanceof Error ? err.message : 'Subtitle file fetch failed';
+            return reply.code(status).type('text/plain').send(message);
+        }
     });
 
     // Progressive scrape: one provider only (SPA waterfall / on-demand switch)
