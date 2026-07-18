@@ -1,12 +1,10 @@
 /**
- * Dedicated subtitle file fetch — does NOT use OMSS /v1/proxy.
+ * Optional/debug subtitle file fetch — NOT used by SPA Path B default.
  *
- * Why: OpenSubtitles URLs have no .srt extension. When AWS gets Anubis 403 HTML,
- * ProxyService treats text/html as a "manifest" and rewrites the body into
- * /v1/proxy?data=… garbage (what the user saw in the browser).
- *
- * This path uses scrapeFetch (residential PROXY_URL when configured), validates
- * the body looks like a caption file, and returns plain text only.
+ * Path B downloads OpenSubtitles in the browser (user residential IP).
+ * This endpoint remains for manual EC2 debugging. EC2/datacenter IPs
+ * (and free DC proxies) typically get Anubis, CF challenges, or
+ * OpenSubtitles login-wall fake SRTs.
  */
 
 import {
@@ -38,10 +36,24 @@ export function isBotChallengeHtml(text: string): boolean {
     );
 }
 
+/** OpenSubtitles soft-block when IP is datacenter / unauthenticated. */
+export function isOpenSubtitlesLoginWall(text: string): boolean {
+    const t = text.slice(0, 4000);
+    return (
+        /need to Log In/i.test(t) ||
+        /continue OpenSubtitles\.org/i.test(t) ||
+        /you need to log in/i.test(t) ||
+        (/OpenSubtitles\.org/i.test(t) &&
+            /log\s*in/i.test(t) &&
+            t.length < 800)
+    );
+}
+
 export function looksLikeSubtitle(text: string): boolean {
     const t = text.trim();
     if (!t || t.length < 8) return false;
     if (isBotChallengeHtml(t)) return false;
+    if (isOpenSubtitlesLoginWall(t)) return false;
     if (t.startsWith('/v1/proxy?data=')) return false;
     if (/^\s*<(!doctype|html)/i.test(t)) return false;
     // WEBVTT
@@ -50,8 +62,12 @@ export function looksLikeSubtitle(text: string): boolean {
     if (
         /\d{1,2}:\d{2}:\d{2}[.,]\d{2,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}/.test(t)
     ) {
+        // Still reject login-wall that happens to use SRT timestamps
+        if (isOpenSubtitlesLoginWall(t)) return false;
         return true;
     }
+    // microDVD {frame}{frame}text
+    if (/^\{\d+\}\{\d+\}/m.test(t)) return true;
     // ASS
     if (/\[Script Info\]/i.test(t) || /Dialogue:/i.test(t)) return true;
     return false;
@@ -79,7 +95,6 @@ function assertSafePublicHttpsUrl(raw: string): URL {
             });
         }
     }
-    // Block obvious private IPs
     if (
         /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|127\.)/.test(host) ||
         host === '::1'
@@ -109,8 +124,8 @@ export type SubtitleFileResult =
       };
 
 /**
- * Fetch one subtitle file for browser download.
- * OpenSubtitles: force residential proxy when PROXY_URL is set (no AWS direct).
+ * Debug/legacy: fetch one subtitle file from core egress.
+ * SPA Path B should download OpenSubtitles in the browser instead.
  */
 export async function fetchSubtitleFile(
     upstreamUrl: string
@@ -127,13 +142,11 @@ export async function fetchSubtitleFile(
         method: 'GET',
         headers,
         timeoutMs: 25_000,
-        // OpenSubtitles must not fall back to AWS direct (Anubis 403)
         viaProxy: forceProxy ? true : 'auto',
         redirect: 'follow'
     });
 
     const buf = Buffer.from(await res.arrayBuffer());
-    // Prefer utf-8; keep bytes if needed later
     let text = buf.toString('utf-8');
     if (text.includes('\uFFFD') && !text.includes('-->')) {
         text = buf.toString('latin1');
@@ -149,8 +162,20 @@ export async function fetchSubtitleFile(
             contentType: 'text/plain; charset=utf-8',
             viaProxy,
             error: isBotChallengeHtml(text)
-                ? `Subtitle CDN bot challenge (HTTP ${res.status}). Residential PROXY_URL required and must reach OpenSubtitles without Anubis.`
+                ? `Subtitle CDN bot challenge (HTTP ${res.status}). SPA should download OpenSubtitles in the browser (user IP).`
                 : `Upstream subtitle HTTP ${res.status}`
+        };
+    }
+
+    if (isOpenSubtitlesLoginWall(text)) {
+        return {
+            ok: false,
+            status: 502,
+            body: '',
+            contentType: 'text/plain; charset=utf-8',
+            viaProxy,
+            error:
+                'OpenSubtitles returned a login-wall caption (datacenter IP blocked). Download from the browser instead.'
         };
     }
 
@@ -162,7 +187,7 @@ export async function fetchSubtitleFile(
             contentType: 'text/plain; charset=utf-8',
             viaProxy,
             error:
-                'Upstream did not return a caption file (bot challenge or empty). Check PROXY_URL on core for OpenSubtitles.'
+                'Upstream did not return a caption file (bot challenge or empty). Path B uses browser download for OpenSubtitles.'
         };
     }
 

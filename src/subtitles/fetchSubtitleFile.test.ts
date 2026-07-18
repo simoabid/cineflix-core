@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     isBotChallengeHtml,
+    isOpenSubtitlesLoginWall,
     looksLikeSubtitle
 } from './fetchSubtitleFile.js';
 
@@ -20,6 +21,13 @@ describe('subtitle body detection', () => {
             looksLikeSubtitle(
                 '1\n00:00:05,866 --> 00:00:30,866\nHello\n'
             ),
+            true
+        );
+    });
+
+    it('accepts microDVD frame format', () => {
+        assert.equal(
+            looksLikeSubtitle('{1}{72}Hello world\n{97}{247}Line two\n'),
             true
         );
     });
@@ -41,5 +49,15 @@ describe('subtitle body detection', () => {
             looksLikeSubtitle('<!DOCTYPE html><html lang="en">'),
             false
         );
+    });
+
+    it('rejects OpenSubtitles login-wall fake SRT', () => {
+        const wall = `1
+00:00:00,001 --> 04:00:00,000
+In order to continue OpenSubtitles.org
+subtitles service you need to Log In
+`;
+        assert.equal(isOpenSubtitlesLoginWall(wall), true);
+        assert.equal(looksLikeSubtitle(wall), false);
     });
 });

@@ -11,11 +11,15 @@ export {
 export {
     createSubtitleProxyUrl,
     getProxyBaseUrl,
+    normalizeSubtitleDownloadUrl,
     proxySubtitleUrls,
-    headersForSubtitleUpstream
+    headersForSubtitleUpstream,
+    isOpenSubtitlesUrl,
+    unwrapSubtitleUpstream
 } from './proxyUrl.js';
 export {
     fetchSubtitleFile,
     looksLikeSubtitle,
-    isBotChallengeHtml
+    isBotChallengeHtml,
+    isOpenSubtitlesLoginWall
 } from './fetchSubtitleFile.js';

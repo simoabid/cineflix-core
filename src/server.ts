@@ -162,8 +162,9 @@ async function main() {
             language: q.language
         });
 
-        // Rewrite CDN URLs through public core /v1/proxy so the SPA can
-        // download without auth-gated MERN /api/proxy (needsProxy path).
+        // Path B: return browser-downloadable URLs (raw OpenSubtitles CDN).
+        // SPA fetches files with the user's residential IP (CORS * on OS).
+        // Do NOT wrap OS into /v1/subtitles/file — EC2/DC IPs get blocked.
         const subtitles = proxySubtitleUrls(result.subtitles);
 
         return reply.code(200).send({
@@ -184,9 +185,9 @@ async function main() {
     });
 
     /**
-     * Download one subtitle file (plain text). Bypasses OMSS /v1/proxy so
-     * OpenSubtitles Anubis HTML is never rewritten as a fake HLS manifest.
-     * Uses residential PROXY_URL for opensubtitles.org when configured.
+     * Optional/debug: download one subtitle file from core egress.
+     * SPA Path B does NOT use this for OpenSubtitles — browser downloads
+     * raw CDN URLs (user IP). Keep for EC2 diagnostics only.
      *
      * GET /v1/subtitles/file?url=https%3A%2F%2Fdl.opensubtitles.org%2F...
      */

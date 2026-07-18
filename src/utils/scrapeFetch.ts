@@ -61,8 +61,8 @@ const DEFAULT_PROXY_HOST_SUFFIXES = [
     // VidCore player + enc-dec (token scrape)
     'vidcore.net',
     'enc-dec.app',
-    // Subtitle CDNs — OpenSubtitles / Wyzie Charlie download hosts block AWS
-    // datacenter IPs (HTTP 403). Route /v1/proxy upstream via residential egress.
+    // OpenSubtitles still on allowlist for optional debug /v1/subtitles/file.
+    // SPA Path B downloads OS files in the browser (user IP) — not via this.
     'opensubtitles.org',
     'dl.opensubtitles.org',
     'rest.opensubtitles.org',
@@ -103,9 +103,7 @@ export function isScrapeProxyStreamEnabled(): boolean {
 
 function parseHostSuffixes(): string[] {
     const raw = process.env.SCRAPE_PROXY_HOSTS?.trim();
-    // Always keep built-in defaults (incl. OpenSubtitles). Custom env hosts
-    // are ADDED — never replace, or Wyzie SRT downloads fall back to AWS IP
-    // and hit Anubis 403 while stream VTT still works.
+    // Always keep built-in defaults. Custom env hosts are ADDED — never replace.
     const extra = raw
         ? raw
               .split(',')
@@ -129,7 +127,7 @@ function hostMatchesKnownPatterns(hostname: string): boolean {
     // Hydrogen / Oxygen style CDNs from VidKing recon
     if (/lookcrew/i.test(h) && h.endsWith('.site')) return true;
     if (/\.r2\.dev$/i.test(h)) return true;
-    // Subtitle CDNs (Wyzie Charlie → OpenSubtitles) always want residential
+    // Debug file endpoint may still force proxy for OS; SPA uses browser download.
     if (h.includes('opensubtitles.org')) return true;
     return false;
 }
