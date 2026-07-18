@@ -6,6 +6,10 @@ export const streamPatterns: RegExp[] = [
     /hub\.(raj\.lat|toxix\.buzz|oreao-cdn\.buzz)/,
     /wasabisys\.com/,
     /hakunaymatata\.com/,
+    // VidLink progressive MP4 edge hosts
+    /vodvidl\.site|stormvv\.|bcdn\.hakunaymatata/,
+    // VidSrc nested CDN proxies (HLS segments when extension present)
+    /oogachakacdn\.store/,
     /streamflixserver\.site|tripplestream\.online/,
     /illimitableinkwell\.site/,
     /frostcomet5\.pro/,
