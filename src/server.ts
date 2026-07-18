@@ -18,6 +18,7 @@ import {
     wyzieKeyCount,
     wyzieKeyPoolSummary
 } from './subtitles/index.js';
+import { proxySubtitleUrls } from './subtitles/proxyUrl.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -160,8 +161,12 @@ async function main() {
             language: q.language
         });
 
+        // Rewrite CDN URLs through public core /v1/proxy so the SPA can
+        // download without auth-gated MERN /api/proxy (needsProxy path).
+        const subtitles = proxySubtitleUrls(result.subtitles);
+
         return reply.code(200).send({
-            subtitles: result.subtitles,
+            subtitles,
             source: 'wyzie',
             keysTried: result.keysTried,
             keyPool: result.keyPool,

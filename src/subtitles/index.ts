@@ -8,3 +8,8 @@ export {
     wyzieKeyPoolSummary,
     resetWyzieKeyPoolForTests
 } from './wyzieKeys.js';
+export {
+    createSubtitleProxyUrl,
+    getProxyBaseUrl,
+    proxySubtitleUrls
+} from './proxyUrl.js';
