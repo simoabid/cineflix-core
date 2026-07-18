@@ -60,7 +60,13 @@ const DEFAULT_PROXY_HOST_SUFFIXES = [
     'eat-peach.sbs',
     // VidCore player + enc-dec (token scrape)
     'vidcore.net',
-    'enc-dec.app'
+    'enc-dec.app',
+    // Subtitle CDNs — OpenSubtitles / Wyzie Charlie download hosts block AWS
+    // datacenter IPs (HTTP 403). Route /v1/proxy upstream via residential egress.
+    'opensubtitles.org',
+    'dl.opensubtitles.org',
+    'rest.opensubtitles.org',
+    'www.opensubtitles.org'
 ];
 
 let agent: ProxyAgent | null | undefined;

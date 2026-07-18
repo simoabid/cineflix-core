@@ -26,6 +26,16 @@ describe('subtitle proxy URL rewrite', () => {
         assert.equal(data.url, 'https://cdn.example/en.srt');
     });
 
+    it('uses TemporaryUserAgent for OpenSubtitles hosts', () => {
+        const u = createSubtitleProxyUrl(
+            'https://dl.opensubtitles.org/en/download/file/1'
+        );
+        const data = JSON.parse(
+            decodeURIComponent(new URL(u).searchParams.get('data')!)
+        );
+        assert.equal(data.headers['User-Agent'], 'TemporaryUserAgent');
+    });
+
     it('rewrites lists and skips already-proxied urls', () => {
         const already =
             'https://core.cineflix.dev/v1/proxy?data=%7B%22url%22%3A%22x%22%7D';

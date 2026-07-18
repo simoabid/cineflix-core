@@ -175,6 +175,45 @@ if (typeof protoAny.handleBufferedRequest === 'function') {
         proxyData: { url: string; headers?: Record<string, string> }
     ) {
         const result = await orig.call(this, proxyData);
+        // OpenSubtitles (and similar) subtitle URLs have no .srt extension.
+        // On 403 AWS blocks, OMSS treats text/html as a "manifest" and rewrites
+        // the body into garbage /v1/proxy lines. Pass through raw error bodies
+        // for non-OK responses so the client can fail cleanly.
+        const status = result.statusCode ?? 200;
+        if (status < 200 || status >= 300) {
+            return {
+                ...result,
+                contentType: result.contentType || 'text/plain',
+                // Ensure browser/CORS clients see the real failure status
+                statusCode: status
+            };
+        }
+        // Subtitle downloads: force text/plain so clients don't mis-detect
+        if (
+            /opensubtitles\.org/i.test(proxyData.url) ||
+            /\.(vtt|srt|ass|ssa)(\?|$)/i.test(proxyData.url)
+        ) {
+            const body = result.data?.toString?.('utf-8') ?? '';
+            // If upstream still returned HTML challenge, surface as 502 body
+            if (
+                /^\s*<(!DOCTYPE|html)/i.test(body) ||
+                body.includes('Just a moment')
+            ) {
+                return {
+                    data: Buffer.from(
+                        'Upstream subtitle CDN blocked this request (HTML challenge or 403). Residential PROXY_URL required for OpenSubtitles on EC2.',
+                        'utf-8'
+                    ),
+                    contentType: 'text/plain; charset=utf-8',
+                    statusCode: 502,
+                    headers: result.headers
+                };
+            }
+            return {
+                ...result,
+                contentType: 'text/plain; charset=utf-8'
+            };
+        }
         return {
             ...result,
             contentType: forceVideoContentType(
