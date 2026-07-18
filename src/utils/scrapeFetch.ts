@@ -61,12 +61,6 @@ const DEFAULT_PROXY_HOST_SUFFIXES = [
     // VidCore player + enc-dec (token scrape)
     'vidcore.net',
     'enc-dec.app',
-    // OpenSubtitles still on allowlist for optional debug /v1/subtitles/file.
-    // SPA Path B downloads OS files in the browser (user IP) — not via this.
-    'opensubtitles.org',
-    'dl.opensubtitles.org',
-    'rest.opensubtitles.org',
-    'www.opensubtitles.org'
 ];
 
 let agent: ProxyAgent | null | undefined;
@@ -127,8 +121,6 @@ function hostMatchesKnownPatterns(hostname: string): boolean {
     // Hydrogen / Oxygen style CDNs from VidKing recon
     if (/lookcrew/i.test(h) && h.endsWith('.site')) return true;
     if (/\.r2\.dev$/i.test(h)) return true;
-    // Debug file endpoint may still force proxy for OS; SPA uses browser download.
-    if (h.includes('opensubtitles.org')) return true;
     return false;
 }
 
@@ -299,8 +291,7 @@ export async function scrapeFetch(
                     )) as unknown as Response;
                 } catch (err) {
                     // Optional direct fallback (dev / flaky proxy). Default ON
-                    // for viaProxy:'auto' only. viaProxy:true (OpenSubtitles)
-                    // must NEVER fall back to AWS direct — that hits Anubis 403.
+                    // for viaProxy:'auto' only. viaProxy:true must not fall back.
                     const allowFallback = !/^(0|false|off|no)$/i.test(
                         (
                             process.env.SCRAPE_PROXY_FALLBACK_DIRECT ?? 'true'

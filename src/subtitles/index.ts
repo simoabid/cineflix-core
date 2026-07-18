@@ -9,17 +9,9 @@ export {
     resetWyzieKeyPoolForTests
 } from './wyzieKeys.js';
 export {
-    createSubtitleProxyUrl,
-    getProxyBaseUrl,
-    normalizeSubtitleDownloadUrl,
-    proxySubtitleUrls,
-    headersForSubtitleUpstream,
     isOpenSubtitlesUrl,
+    normalizeSubtitleDownloadUrl,
+    normalizeSubtitleUrls,
+    resolveProviderSubtitleUrl,
     unwrapSubtitleUpstream
-} from './proxyUrl.js';
-export {
-    fetchSubtitleFile,
-    looksLikeSubtitle,
-    isBotChallengeHtml,
-    isOpenSubtitlesLoginWall
-} from './fetchSubtitleFile.js';
+} from './normalizeUrls.js';

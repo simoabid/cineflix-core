@@ -8,7 +8,10 @@ import type {
     SubtitleFormat
 } from '@omss/framework';
 import { resolveVidsrcAll } from './vidsrcClient.js';
-import { searchWyzieSubtitles } from '../../subtitles/index.js';
+import {
+    resolveProviderSubtitleUrl,
+    searchWyzieSubtitles
+} from '../../subtitles/index.js';
 
 /**
  * VidSrc provider.
@@ -18,8 +21,7 @@ import { searchWyzieSubtitles } from '../../subtitles/index.js';
  * request (HMAC), and AES-decrypts the backend response into a signed `.m3u8`.
  * `vidsrcClient.ts` reproduces that flow in Node (running the site's own wasm
  * for key derivation + decryption). This provider wraps the resolved stream
- * through `createProxyUrl()` and attaches subtitles from the wyzie API that the
- * site itself uses.
+ * through `createProxyUrl()` and attaches Wyzie subtitles (OpenSubtitles raw CDN).
  */
 export class VidSrcProvider extends BaseProvider {
     readonly id = 'vidsrc';
@@ -111,7 +113,10 @@ export class VidSrcProvider extends BaseProvider {
                 media.type === 'tv' && media.e != null ? media.e : undefined
         });
         return subtitles.map((sub) => ({
-            url: this.createProxyUrl(sub.url, this.HEADERS),
+            // OpenSubtitles: raw CDN (browser IP). Other hosts: OMSS proxy.
+            url: resolveProviderSubtitleUrl(sub.url, (u) =>
+                this.createProxyUrl(u, this.HEADERS)
+            ),
             label: sub.label,
             format: this.subtitleFormat(sub.format, sub.url)
         }));

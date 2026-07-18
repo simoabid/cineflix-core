@@ -188,20 +188,17 @@ if (typeof protoAny.handleBufferedRequest === 'function') {
                 statusCode: status
             };
         }
-        // Subtitle downloads: force text/plain so clients don't mis-detect
-        if (
-            /opensubtitles\.org/i.test(proxyData.url) ||
-            /\.(vtt|srt|ass|ssa)(\?|$)/i.test(proxyData.url)
-        ) {
+        // Caption files via /v1/proxy: force text/plain; reject HTML challenges.
+        // OpenSubtitles should not use this path (browser downloads raw CDN).
+        if (/\.(vtt|srt|ass|ssa)(\?|$)/i.test(proxyData.url)) {
             const body = result.data?.toString?.('utf-8') ?? '';
-            // If upstream still returned HTML challenge, surface as 502 body
             if (
                 /^\s*<(!DOCTYPE|html)/i.test(body) ||
                 body.includes('Just a moment')
             ) {
                 return {
                     data: Buffer.from(
-                        'Upstream subtitle CDN blocked this request (HTML challenge or 403). Residential PROXY_URL required for OpenSubtitles on EC2.',
+                        'Upstream caption CDN blocked this request (HTML challenge).',
                         'utf-8'
                     ),
                     contentType: 'text/plain; charset=utf-8',

@@ -8,7 +8,10 @@ import type {
     SubtitleFormat
 } from '@omss/framework';
 import { resolveHexaAll } from './hexaClient.js';
-import { searchWyzieSubtitles } from '../../subtitles/index.js';
+import {
+    resolveProviderSubtitleUrl,
+    searchWyzieSubtitles
+} from '../../subtitles/index.js';
 
 /**
  * Hexa (hexa.su / theemoviedb.hexa.su)
@@ -124,7 +127,10 @@ export class HexaProvider extends BaseProvider {
                 media.type === 'tv' && media.e != null ? media.e : undefined
         });
         return subtitles.map((s) => ({
-            url: this.createProxyUrl(s.url, this.HEADERS),
+            // OpenSubtitles: raw CDN (browser IP). Other hosts: OMSS proxy.
+            url: resolveProviderSubtitleUrl(s.url, (u) =>
+                this.createProxyUrl(u, this.HEADERS)
+            ),
             label: s.label,
             format: this.detectSubtitleFormat(s.url, s.format)
         }));
