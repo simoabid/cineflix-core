@@ -69,12 +69,21 @@ export class M111MoviesProvider extends BaseProvider {
             });
 
             this.console.log(
-                `Resolved ${result.sources.length} source(s) and ` +
+                `Resolved ${result.sources.length} playable source(s) and ` +
                     `${result.subtitles.length} subtitle(s)` +
                     (result.servers.length
                         ? ` from ${result.servers.length} server(s)`
                         : '')
             );
+
+            for (const msg of result.probeDiagnostics ?? []) {
+                diagnostics.push({
+                    code: 'PARTIAL_SCRAPE',
+                    message: `${this.name}: ${msg}`,
+                    field: '',
+                    severity: 'warning'
+                });
+            }
 
             const sources: Source[] = result.sources.map((s) => ({
                 url: this.createProxyUrl(s.url, {
@@ -100,7 +109,11 @@ export class M111MoviesProvider extends BaseProvider {
             }));
 
             if (sources.length === 0) {
-                return this.emptyResult('No playable sources found');
+                return this.emptyResult(
+                    result.probeDiagnostics?.length
+                        ? `No playable sources after probe (${result.probeDiagnostics.slice(0, 3).join('; ')})`
+                        : 'No playable sources found'
+                );
             }
 
             return { sources, subtitles, diagnostics };

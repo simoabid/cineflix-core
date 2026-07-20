@@ -4,6 +4,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildUpstreamMediaHeaders } from './proxyResolvePatch.js';
+import { normalizeUpstreamMediaUrl } from './utils/streamUrl.js';
 
 describe('buildUpstreamMediaHeaders', () => {
     it('strips Connection keep-alive and forwards Range once', () => {
@@ -31,5 +32,15 @@ describe('buildUpstreamMediaHeaders', () => {
         });
         assert.equal(out['Range'], 'bytes=100-200');
         assert.equal(out['Keep-Alive'], undefined);
+    });
+});
+
+describe('normalizeUpstreamMediaUrl (proxy path)', () => {
+    it('never leaves token=?token= for streaming segments', () => {
+        const dirty =
+            'https://strategicgrowthpartners.site/8Ybx/content/aa/bb/page-0.html?token=?token=';
+        const clean = normalizeUpstreamMediaUrl(dirty);
+        assert.equal(clean.includes('token=?token='), false);
+        assert.equal(clean.includes('?token=?'), false);
     });
 });

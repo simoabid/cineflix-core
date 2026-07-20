@@ -16,6 +16,7 @@ import {
     isScrapeProxyStreamEnabled,
     scrapeFetch
 } from './utils/scrapeFetch.js';
+import { normalizeUpstreamMediaUrl } from './utils/streamUrl.js';
 
 const HOST_THEN_PATH =
     /^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+\/.+/;
@@ -57,6 +58,7 @@ if (typeof originalResolveUrl === 'function') {
         targetUrl: string
     ): string {
         const trimmed = targetUrl.trim();
+        let resolved: string;
         if (
             HOST_THEN_PATH.test(trimmed) &&
             !trimmed.startsWith('http://') &&
@@ -64,9 +66,16 @@ if (typeof originalResolveUrl === 'function') {
             !trimmed.startsWith('//') &&
             !trimmed.startsWith('/')
         ) {
-            return originalResolveUrl.call(this, baseUrl, `https://${trimmed}`);
+            resolved = originalResolveUrl.call(
+                this,
+                baseUrl,
+                `https://${trimmed}`
+            );
+        } else {
+            resolved = originalResolveUrl.call(this, baseUrl, targetUrl);
         }
-        return originalResolveUrl.call(this, baseUrl, targetUrl);
+        // Collapse malformed query (token=?token=) before createProxyUrl.
+        return normalizeUpstreamMediaUrl(resolved);
     };
 }
 
@@ -205,10 +214,11 @@ if (typeof protoAny.handleStreamingRequest === 'function') {
             proxyData.headers,
             clientRange
         );
+        const upstreamUrl = normalizeUpstreamMediaUrl(proxyData.url);
 
         // Media segments can be large; allow longer than default scrape timeout.
         const response = await this.fetchWithTimeout(
-            proxyData.url,
+            upstreamUrl,
             { method: 'GET', headers },
             120_000
         );
@@ -218,9 +228,9 @@ if (typeof protoAny.handleStreamingRequest === 'function') {
         if (response.status === 416) {
             throw new OMSSError(
                 'INTERNAL_ERROR',
-                `Upstream returned 416 (Range Not Satisfiable) for ${proxyData.url.slice(0, 120)}`,
+                `Upstream returned 416 (Range Not Satisfiable) for ${upstreamUrl.slice(0, 120)}`,
                 416,
-                { url: proxyData.url }
+                { url: upstreamUrl }
             );
         }
         if (response.status >= 400 && response.status !== 206) {
@@ -228,7 +238,7 @@ if (typeof protoAny.handleStreamingRequest === 'function') {
                 'INTERNAL_ERROR',
                 `Upstream returned ${response.status}`,
                 response.status >= 500 ? 502 : response.status,
-                { url: proxyData.url }
+                { url: upstreamUrl }
             );
         }
         if (!response.body) {
@@ -236,7 +246,7 @@ if (typeof protoAny.handleStreamingRequest === 'function') {
                 'INTERNAL_ERROR',
                 'Upstream returned empty body for streaming request',
                 502,
-                { url: proxyData.url }
+                { url: upstreamUrl }
             );
         }
 
@@ -244,9 +254,9 @@ if (typeof protoAny.handleStreamingRequest === 'function') {
             response.body as import('stream/web').ReadableStream
         );
         const contentType = forceVideoContentType(
-            proxyData.url,
+            upstreamUrl,
             response.headers.get('content-type') ??
-                this.getMimeType(proxyData.url)
+                this.getMimeType(upstreamUrl)
         );
 
         const headersOut: Record<string, string> = {
@@ -289,9 +299,11 @@ if (typeof protoAny.handleBufferedRequest === 'function') {
         this: unknown,
         proxyData: { url: string; headers?: Record<string, string> }
     ) {
+        const upstreamUrl = normalizeUpstreamMediaUrl(proxyData.url);
         // Same hop-by-hop cleanup for playlists / small assets
         const cleaned = {
             ...proxyData,
+            url: upstreamUrl,
             headers: buildUpstreamMediaHeaders(
                 proxyData.headers,
                 pickRange(proxyData.headers)
@@ -306,7 +318,7 @@ if (typeof protoAny.handleBufferedRequest === 'function') {
                 statusCode: status
             };
         }
-        if (/\.(vtt|srt|ass|ssa)(\?|$)/i.test(proxyData.url)) {
+        if (/\.(vtt|srt|ass|ssa)(\?|$)/i.test(upstreamUrl)) {
             const body = result.data?.toString?.('utf-8') ?? '';
             if (
                 /^\s*<(!DOCTYPE|html)/i.test(body) ||
@@ -330,7 +342,7 @@ if (typeof protoAny.handleBufferedRequest === 'function') {
         return {
             ...result,
             contentType: forceVideoContentType(
-                proxyData.url,
+                upstreamUrl,
                 result.contentType
             )
         };

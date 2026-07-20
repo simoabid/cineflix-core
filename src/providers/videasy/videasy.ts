@@ -7,6 +7,11 @@ import type {
 import type { VideasyServer } from './videasy.types.js';
 import { decryptResponse } from './decryptor.js';
 import { scrapeFetch } from '../../utils/scrapeFetch.js';
+import { filterPlayableSources } from '../../utils/streamProbe.js';
+import {
+    hasMalformedMediaToken,
+    normalizeUpstreamMediaUrl
+} from '../../utils/streamUrl.js';
 
 /**
  * videasy migrated its backend to api.wingsdatabase.com and now requires a
@@ -110,21 +115,50 @@ export class VideasyProvider extends BaseProvider {
             )
         );
 
-        const sources: ProviderResult['sources'] = [];
+        type RawMapped = {
+            rawUrl: string;
+            headers: Record<string, string>;
+            type: 'hls' | 'mp4';
+            quality: string;
+            audioTracks: ProviderResult['sources'][number]['audioTracks'];
+            serverName: string;
+        };
+
+        const rawSources: RawMapped[] = [];
         const subtitles: ProviderResult['subtitles'] = [];
         const diagnostics: ProviderResult['diagnostics'] = [];
         let failCount = 0;
 
-        for (const result of results) {
+        for (let i = 0; i < results.length; i++) {
+            const result = results[i]!;
+            const server = VIDEASY_SERVERS[i]!;
             if (result.status === 'rejected' || !result.value) {
                 failCount++;
                 continue;
             }
-            sources.push(...result.value.sources);
-            subtitles.push(...result.value.subtitles);
+            // fetchFromServer returns already-proxied sources; rework uses raw via internal field
+            const batch = result.value as ProviderResult & {
+                _raw?: RawMapped[];
+            };
+            if (batch._raw) {
+                rawSources.push(...batch._raw);
+            } else {
+                // Fallback: cannot probe proxied URLs reliably — keep as-is only if empty raw
+                for (const s of batch.sources) {
+                    rawSources.push({
+                        rawUrl: s.url,
+                        headers: this.HEADERS,
+                        type: s.type === 'mp4' ? 'mp4' : 'hls',
+                        quality: s.quality ?? 'unknown',
+                        audioTracks: s.audioTracks,
+                        serverName: server.name
+                    });
+                }
+            }
+            subtitles.push(...batch.subtitles);
         }
 
-        if (failCount > 0 && sources.length > 0) {
+        if (failCount > 0 && rawSources.length > 0) {
             diagnostics.push({
                 code: 'PARTIAL_SCRAPE',
                 message: `${failCount} of ${VIDEASY_SERVERS.length} videasy servers did not return results`,
@@ -133,9 +167,55 @@ export class VideasyProvider extends BaseProvider {
             });
         }
 
+        // Drop interkh/signed CDN streams that 410 from datacenter IPs (same as VidKing Oxygen).
+        const probeDiagnostics: string[] = [];
+        const playable = await filterPlayableSources(
+            rawSources
+                .filter(
+                    (s) =>
+                        s.rawUrl &&
+                        /^https?:\/\//i.test(s.rawUrl) &&
+                        !hasMalformedMediaToken(s.rawUrl)
+                )
+                .map((s) => ({
+                    url: s.rawUrl,
+                    headers: s.headers,
+                    label: `videasy/${s.serverName}/${s.quality}`,
+                    type: s.type
+                })),
+            {
+                timeoutMs: 8_000,
+                maxSources: 12,
+                viaProxy: 'auto',
+                diagnostics: probeDiagnostics
+            }
+        );
+
+        for (const msg of probeDiagnostics) {
+            diagnostics.push({
+                code: 'PARTIAL_SCRAPE',
+                message: `${this.name}: ${msg}`,
+                field: '',
+                severity: 'warning'
+            });
+        }
+
+        const playableUrls = new Set(playable.map((p) => p.url));
+        const sources: ProviderResult['sources'] = rawSources
+            .filter((s) => playableUrls.has(s.rawUrl))
+            .map((s) => ({
+                url: this.createProxyUrl(s.rawUrl, s.headers),
+                type: s.type,
+                quality: s.quality,
+                audioTracks: s.audioTracks,
+                provider: { id: this.id, name: this.name }
+            }));
+
         if (sources.length === 0) {
             return this.emptyResult(
-                'all videasy servers returned no sources',
+                probeDiagnostics.length
+                    ? `no playable sources after probe (${probeDiagnostics.slice(0, 3).join('; ')})`
+                    : 'all videasy servers returned no sources',
                 media
             );
         }
@@ -224,30 +304,51 @@ export class VideasyProvider extends BaseProvider {
               )
             : decrypted.sources;
 
-        const sources: ProviderResult['sources'] = rawSources
+        const audioTracks = [
+            {
+                language: this.resolveLanguage(server),
+                label: this.resolveLanguageLabel(server)
+            }
+        ];
+
+        const _raw = rawSources
             .filter((s) => !!s?.url)
-            .map((s) => ({
-                url: this.createProxyUrl(s.url, this.HEADERS),
-                type: this.detectType(s.url, s.type),
-                quality: this.normalizeQuality(s.quality),
-                audioTracks: [
-                    {
-                        language: this.resolveLanguage(server),
-                        label: this.resolveLanguageLabel(server)
-                    }
-                ],
-                provider: { id: this.id, name: this.name }
-            }));
+            .map((s) => {
+                const rawUrl = normalizeUpstreamMediaUrl(s.url);
+                return {
+                    rawUrl,
+                    headers: { ...this.HEADERS },
+                    type: this.detectType(rawUrl, s.type),
+                    quality: this.normalizeQuality(s.quality),
+                    audioTracks,
+                    serverName: server.name
+                };
+            })
+            .filter((s) => s.rawUrl && /^https?:\/\//i.test(s.rawUrl));
+
+        // Placeholder sources; parent getSources re-wraps after probe.
+        const sources: ProviderResult['sources'] = _raw.map((s) => ({
+            url: s.rawUrl,
+            type: s.type,
+            quality: s.quality,
+            audioTracks: s.audioTracks,
+            provider: { id: this.id, name: this.name }
+        }));
 
         const subtitles: ProviderResult['subtitles'] = decrypted.subtitles
             .filter((s) => !!s?.url)
             .map((s) => ({
-                url: this.createProxyUrl(s.url, {}),
+                url: this.createProxyUrl(s.url, this.HEADERS),
                 label: s.lang ?? s.language ?? 'Unknown',
                 format: 'vtt' as const
             }));
 
-        return { sources, subtitles, diagnostics: [] };
+        return {
+            sources,
+            subtitles,
+            diagnostics: [],
+            _raw
+        } as ProviderResult & { _raw: typeof _raw };
     }
 
     // builds query params for the wingsdatabase sources-with-title endpoint.

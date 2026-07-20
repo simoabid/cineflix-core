@@ -7,6 +7,11 @@ import type {
     Subtitle
 } from '@omss/framework';
 import { scrapeFetch } from '../../utils/scrapeFetch.js';
+import { filterPlayableSources } from '../../utils/streamProbe.js';
+import {
+    hasMalformedMediaToken,
+    normalizeUpstreamMediaUrl
+} from '../../utils/streamUrl.js';
 import { VixSrcApiResponse } from './vixsrc.types.js';
 
 export class VixSrcProvider extends BaseProvider {
@@ -68,7 +73,12 @@ export class VixSrcProvider extends BaseProvider {
                 return this.emptyResult('Invalid or expired token', media);
             }
 
-            const masterUrl = this.buildMasterUrl(tokenData);
+            const masterUrl = normalizeUpstreamMediaUrl(
+                this.buildMasterUrl(tokenData)
+            );
+            if (hasMalformedMediaToken(masterUrl)) {
+                return this.emptyResult('Malformed stream token', media);
+            }
 
             const playlistContent = await this.fetchPlaylist(
                 masterUrl,
@@ -79,12 +89,57 @@ export class VixSrcProvider extends BaseProvider {
                 return this.emptyResult('Failed to fetch playlist', media);
             }
 
-            return this.parsePlaylist(
+            const parsed = this.parsePlaylist(
                 playlistContent,
                 masterUrl,
                 pageUrl,
                 media
             );
+
+            // Partial 403 on segments is common from DC IPs — only return if
+            // first media segment actually answers.
+            if (parsed.sources.length === 0) return parsed;
+
+            const probeDiagnostics: string[] = [];
+            const playable = await filterPlayableSources(
+                [
+                    {
+                        url: masterUrl,
+                        headers: {
+                            ...this.HEADERS,
+                            Referer: pageUrl
+                        },
+                        label: 'vixsrc/master',
+                        type: 'hls'
+                    }
+                ],
+                {
+                    timeoutMs: 10_000,
+                    maxSources: 1,
+                    viaProxy: true,
+                    diagnostics: probeDiagnostics
+                }
+            );
+
+            if (playable.length === 0) {
+                return this.emptyResult(
+                    probeDiagnostics[0] ??
+                        'master playlist not playable (segment probe failed)',
+                    media
+                );
+            }
+
+            const diagnostics = [
+                ...(parsed.diagnostics ?? []),
+                ...probeDiagnostics.map((message) => ({
+                    code: 'PARTIAL_SCRAPE' as const,
+                    message: `${this.name}: ${message}`,
+                    field: '',
+                    severity: 'warning' as const
+                }))
+            ];
+
+            return { ...parsed, diagnostics };
         } catch (error) {
             return this.emptyResult(
                 error instanceof Error

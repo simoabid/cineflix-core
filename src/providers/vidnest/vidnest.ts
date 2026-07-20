@@ -23,6 +23,28 @@ import type {
     deltaResponse,
     movieboxSource
 } from './vidnest.types.js';
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
+import { filterPlayableSources } from '../../utils/streamProbe.js';
+import {
+    hasMalformedMediaToken,
+    normalizeUpstreamMediaUrl
+} from '../../utils/streamUrl.js';
+
+type RawSource = {
+    url: string;
+    headers?: Record<string, string>;
+    type: SourceType;
+    quality: string;
+    audioTracks: Source['audioTracks'];
+    serverPath: string;
+};
+
+type RawSubtitle = {
+    url: string;
+    headers?: Record<string, string>;
+    label: string;
+    format: SubtitleFormat;
+};
 
 export class VidNestProvider extends BaseProvider {
     readonly id = 'vidnest';
@@ -60,50 +82,58 @@ export class VidNestProvider extends BaseProvider {
     private readonly handlers: {
         [K in SupportedServer]: {
             parse: (data: string) => ServerMap[K];
-            mapSources: (root: ServerMap[K]) => Source[];
-            mapSubtitles: (root: ServerMap[K]) => Subtitle[];
+            mapSources: (root: ServerMap[K], serverPath: string) => RawSource[];
+            mapSubtitles: (root: ServerMap[K]) => RawSubtitle[];
         };
     } = {
         klikxxi: {
             parse: (d) => decrypt<klikxxiResponse>(d),
-            mapSources: (root) =>
-                (root?.sources ?? []).map((s) => ({
-                    url: this.createProxyUrl(s.url),
-                    type: this.inferSourceType(s.type, s.url),
-                    quality: s.quality,
-                    audioTracks: [{ language: 'English', label: 'eng' }],
-                    provider: { id: this.id, name: this.name }
-                })),
+            mapSources: (root, serverPath) =>
+                (root?.sources ?? []).map((s) =>
+                    this.rawSource(
+                        s.url,
+                        this.HEADERS,
+                        s.type,
+                        s.quality,
+                        [{ language: 'English', label: 'eng' }],
+                        serverPath
+                    )
+                ),
             mapSubtitles: () => []
         },
 
         allmovies: {
             parse: (d) => decrypt<allmoviesResponse>(d),
-            mapSources: (root) =>
-                (root?.streams ?? []).map((s) => ({
-                    url: this.createProxyUrl(s.url),
-                    type: this.inferSourceType(s.type, s.url),
-                    quality: 'Auto',
-                    audioTracks: [{ language: s.language, label: s.language }],
-                    provider: { id: this.id, name: this.name }
-                })),
+            mapSources: (root, serverPath) =>
+                (root?.streams ?? []).map((s) =>
+                    this.rawSource(
+                        s.url,
+                        this.HEADERS,
+                        s.type,
+                        'Auto',
+                        [{ language: s.language, label: s.language }],
+                        serverPath
+                    )
+                ),
             mapSubtitles: () => []
         },
 
         onehd: {
             parse: (d) => decrypt<onehdResponse>(d),
-            mapSources: (root) => [
-                {
-                    url: this.createProxyUrl(root.url, root.headers),
-                    type: this.inferSourceType('', root.url),
-                    quality: 'Auto',
-                    audioTracks: [{ language: 'English', label: 'eng' }],
-                    provider: { id: this.id, name: this.name }
-                }
+            mapSources: (root, serverPath) => [
+                this.rawSource(
+                    root.url,
+                    { ...this.HEADERS, ...(root.headers ?? {}) },
+                    '',
+                    'Auto',
+                    [{ language: 'English', label: 'eng' }],
+                    serverPath
+                )
             ],
             mapSubtitles: (root) =>
                 (root?.subtitles ?? []).map((s) => ({
-                    url: this.createProxyUrl(s.url, root.headers),
+                    url: s.url,
+                    headers: { ...this.HEADERS, ...(root.headers ?? {}) },
                     label: s.lang,
                     format: this.inferSubtitleFormat(s.url)
                 }))
@@ -111,37 +141,36 @@ export class VidNestProvider extends BaseProvider {
 
         hollymoviehd: {
             parse: (d) => decrypt<hollymoviehdResponse>(d),
-            mapSources: (root) =>
-                (root?.sources ?? []).map((s) => ({
-                    url: this.createProxyUrl(s.file),
-                    type: this.inferSourceType(s.type, s.file),
-                    quality: s.label,
-                    audioTracks: [{ language: 'English', label: 'eng' }],
-                    provider: { id: this.id, name: this.name }
-                })),
+            mapSources: (root, serverPath) =>
+                (root?.sources ?? []).map((s) =>
+                    this.rawSource(
+                        s.file,
+                        this.HEADERS,
+                        s.type,
+                        s.label,
+                        [{ language: 'English', label: 'eng' }],
+                        serverPath
+                    )
+                ),
             mapSubtitles: () => []
         },
 
         vidlink: {
             parse: (d) => decrypt<vidlinkResponse>(d),
-            mapSources: (root) => [
-                {
-                    url: this.createProxyUrl(
-                        root.data.stream.playlist,
-                        root.headers
-                    ),
-                    type: this.inferSourceType(
-                        root.data.stream.type,
-                        root.data.stream.playlist
-                    ),
-                    quality: 'Auto',
-                    audioTracks: [{ language: 'English', label: 'eng' }],
-                    provider: { id: this.id, name: this.name }
-                }
+            mapSources: (root, serverPath) => [
+                this.rawSource(
+                    root.data.stream.playlist,
+                    { ...this.HEADERS, ...(root.headers ?? {}) },
+                    root.data.stream.type,
+                    'Auto',
+                    [{ language: 'English', label: 'eng' }],
+                    serverPath
+                )
             ],
             mapSubtitles: (root) =>
                 (root?.data?.stream?.captions ?? []).map((c) => ({
-                    url: this.createProxyUrl(c.url, root.headers),
+                    url: c.url,
+                    headers: { ...this.HEADERS, ...(root.headers ?? {}) },
                     label: c.language,
                     format: this.inferSubtitleFormat(c.url)
                 }))
@@ -149,44 +178,54 @@ export class VidNestProvider extends BaseProvider {
 
         delta: {
             parse: (d) => decrypt<deltaResponse>(d),
-            mapSources: (root) =>
-                (root?.streams ?? []).map((s) => ({
-                    url: this.createProxyUrl(s.url),
-                    type: this.inferSourceType(s.type, s.url),
-                    quality: 'Auto',
-                    audioTracks: [
-                        { language: s.language.slice(0, 3), label: s.language }
-                    ],
-                    provider: { id: this.id, name: this.name }
-                })),
+            mapSources: (root, serverPath) =>
+                (root?.streams ?? []).map((s) =>
+                    this.rawSource(
+                        s.url,
+                        this.HEADERS,
+                        s.type,
+                        'Auto',
+                        [
+                            {
+                                language: s.language.slice(0, 3),
+                                label: s.language
+                            }
+                        ],
+                        serverPath
+                    )
+                ),
             mapSubtitles: () => []
         },
 
         purstream: {
             parse: (d) => decrypt<purstreamResponse>(d),
-            mapSources: (root) =>
-                (root?.sources ?? []).map((s) => ({
-                    url: this.createProxyUrl(s.url),
-                    type: this.inferSourceType(s.format, s.url),
-                    quality: this.inferQuality(s.name),
-                    audioTracks: [{ language: 'French', label: 'fr' }],
-                    provider: { id: this.id, name: this.name }
-                })),
+            mapSources: (root, serverPath) =>
+                (root?.sources ?? []).map((s) =>
+                    this.rawSource(
+                        s.url,
+                        this.HEADERS,
+                        s.format,
+                        this.qualityFromName(s.name),
+                        [{ language: 'French', label: 'fr' }],
+                        serverPath
+                    )
+                ),
             mapSubtitles: () => []
         },
 
         moviebox: {
             parse: (d) => decrypt<movieboxSource>(d),
-            mapSources: (root) =>
-                (root?.url ?? []).map((u) => ({
-                    url: this.createProxyUrl(u.link, this.HEADERS),
-                    type: this.inferSourceType(u.type, u.link),
-                    quality: 'Auto',
-                    audioTracks: [
-                        { language: u.lang.slice(0, 3), label: u.lang }
-                    ],
-                    provider: { id: this.id, name: this.name }
-                })),
+            mapSources: (root, serverPath) =>
+                (root?.url ?? []).map((u) =>
+                    this.rawSource(
+                        u.link,
+                        this.HEADERS,
+                        u.type,
+                        'Auto',
+                        [{ language: u.lang.slice(0, 3), label: u.lang }],
+                        serverPath
+                    )
+                ),
             mapSubtitles: () => []
         }
     };
@@ -203,11 +242,30 @@ export class VidNestProvider extends BaseProvider {
         return this.getSources(media);
     }
 
+    private rawSource(
+        url: string | undefined,
+        headers: Record<string, string> | undefined,
+        typeHint: string,
+        quality: string,
+        audioTracks: Source['audioTracks'],
+        serverPath: string
+    ): RawSource {
+        const clean = normalizeUpstreamMediaUrl(url ?? '');
+        return {
+            url: clean,
+            headers: { ...this.HEADERS, ...(headers ?? {}) },
+            type: this.inferSourceType(typeHint, clean),
+            quality,
+            audioTracks,
+            serverPath
+        };
+    }
+
     private async getSources(
         media: ProviderMediaObject
     ): Promise<ProviderResult> {
-        const sources: Source[] = [];
-        const subtitles: Subtitle[] = [];
+        const rawSources: RawSource[] = [];
+        const rawSubtitles: RawSubtitle[] = [];
         const diagnostics: Diagnostic[] = [];
 
         const promises = this.SERVERS.map((server) => {
@@ -221,14 +279,12 @@ export class VidNestProvider extends BaseProvider {
 
         const results = await Promise.allSettled(promises);
 
-        if (
-            results.filter((r) => r.status === 'rejected').length ===
-            results.length
-        ) {
+        const rejected = results.filter((r) => r.status === 'rejected').length;
+        if (rejected === results.length) {
             diagnostics.push({
                 code: 'PARTIAL_SCRAPE',
                 field: '',
-                message: `${this.name}: ${results.length - results.filter((r) => r.status === 'rejected').length}/${results.length} did not have the requested media`,
+                message: `${this.name}: 0/${results.length} servers returned data`,
                 severity: 'error'
             });
         }
@@ -236,8 +292,9 @@ export class VidNestProvider extends BaseProvider {
         results.forEach((result, i) => {
             if (result.status !== 'fulfilled') return;
 
-            const server = this.SERVERS[i];
-            const handler = this.handlers[server.path as SupportedServer];
+            const server = this.SERVERS[i]!;
+            const key = server.path as SupportedServer;
+            const handler = this.handlers[key];
 
             if (!handler) {
                 diagnostics.push({
@@ -248,18 +305,72 @@ export class VidNestProvider extends BaseProvider {
                 });
                 return;
             }
-            const key = server.path as SupportedServer;
 
-            if (!(key in this.handlers)) return;
-
-            const { sources: s, subtitles: sub } = this.handleServer(
-                key,
-                result.value.data
-            );
-
-            sources.push(...s);
-            subtitles.push(...sub);
+            try {
+                const { sources: s, subtitles: sub } = this.handleServer(
+                    key,
+                    result.value.data,
+                    server.path
+                );
+                rawSources.push(...s.filter((x) => x.url && !hasMalformedMediaToken(x.url)));
+                rawSubtitles.push(...sub);
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : 'parse failed';
+                diagnostics.push({
+                    code: 'PARTIAL_SCRAPE',
+                    field: '',
+                    message: `${this.name}/${server.path}: ${msg}`,
+                    severity: 'warning'
+                });
+            }
         });
+
+        const probeDiagnostics: string[] = [];
+        const playable = await filterPlayableSources(
+            rawSources.map((s) => ({
+                url: s.url,
+                headers: s.headers,
+                label: `${s.serverPath}/${s.quality}`,
+                type: s.type
+            })),
+            {
+                timeoutMs: 8_000,
+                maxSources: 12,
+                viaProxy: 'auto',
+                diagnostics: probeDiagnostics
+            }
+        );
+
+        for (const msg of probeDiagnostics) {
+            diagnostics.push({
+                code: 'PARTIAL_SCRAPE',
+                field: '',
+                message: `${this.name}: ${msg}`,
+                severity: 'warning'
+            });
+        }
+
+        const playableUrls = new Set(playable.map((p) => p.url));
+        const sources: Source[] = rawSources
+            .filter((s) => playableUrls.has(s.url))
+            .map((s) => ({
+                url: this.createProxyUrl(s.url, s.headers ?? this.HEADERS),
+                type: s.type,
+                quality: s.quality,
+                audioTracks: s.audioTracks,
+                provider: {
+                    id: this.id,
+                    name: `${this.name} (${s.serverPath})`
+                }
+            }));
+
+        const subtitles: Subtitle[] = rawSubtitles
+            .filter((s) => s.url && /^https?:\/\//i.test(s.url))
+            .map((s) => ({
+                url: this.createProxyUrl(s.url, s.headers ?? this.HEADERS),
+                label: s.label,
+                format: s.format
+            }));
 
         return {
             sources,
@@ -270,13 +381,16 @@ export class VidNestProvider extends BaseProvider {
 
     private handleServer<K extends SupportedServer>(
         key: K,
-        data: string
-    ): { sources: Source[]; subtitles: Subtitle[] } {
+        data: string,
+        serverPath: string
+    ): { sources: RawSource[]; subtitles: RawSubtitle[] } {
         const handler = this.handlers[key];
         const root = handler.parse(data);
 
         return {
-            sources: handler.mapSources(root),
+            sources: handler
+                .mapSources(root, serverPath)
+                .filter((s) => s.url && /^https?:\/\//i.test(s.url)),
             subtitles: handler.mapSubtitles(root)
         };
     }
@@ -290,7 +404,12 @@ export class VidNestProvider extends BaseProvider {
     }
 
     private async fetchVidnest(url: string) {
-        const res = await fetch(url, { headers: this.HEADERS });
+        // scrapeFetch: API may behave differently on EC2 vs residential laptop.
+        const res = await scrapeFetch(url, {
+            headers: this.HEADERS,
+            timeoutMs: 20_000,
+            viaProxy: 'auto'
+        });
 
         if (!res.ok) {
             throw new Error(`VidNest: ${res.status}`);
@@ -319,5 +438,11 @@ export class VidNestProvider extends BaseProvider {
         if (u.includes('.ssa')) return 'ssa';
         if (u.includes('.ttml')) return 'ttml';
         return 'vtt';
+    }
+
+    private qualityFromName(name?: string): string {
+        if (!name) return 'Auto';
+        const m = name.match(/(\d{3,4}p|4K|8K|HD|SD)/i);
+        return m?.[1] ?? name;
     }
 }

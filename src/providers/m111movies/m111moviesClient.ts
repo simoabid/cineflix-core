@@ -10,6 +10,11 @@
  * Methodology: docs/SCRAPING-MASTERCLASS.md §2 (SPA recon → reproduce → decode).
  */
 import { scrapeFetch } from '../../utils/scrapeFetch.js';
+import { filterPlayableSources } from '../../utils/streamProbe.js';
+import {
+    hasMalformedMediaToken,
+    normalizeUpstreamMediaUrl
+} from '../../utils/streamUrl.js';
 import type {
     M111ResolveResult,
     M111Server,
@@ -129,9 +134,12 @@ function collectSources(
         headers?: Record<string, string>
     ) => {
         if (!url || !/^https?:\/\//i.test(url)) return;
+        const clean = normalizeUpstreamMediaUrl(url);
+        if (!clean || !/^https?:\/\//i.test(clean)) return;
+        if (hasMalformedMediaToken(clean)) return;
         out.push({
-            url,
-            type: pickStreamType(url, type),
+            url: clean,
+            type: pickStreamType(clean, type),
             quality: String(quality || 'Auto'),
             serverName,
             noReferrer: false,
@@ -323,10 +331,40 @@ export async function resolveM111Streams(
         return true;
     });
 
+    // Drop streams that die on first segment (404/410/403/malformed token).
+    // EC2 datacenter IPs and dead mirrors must not be advertised as playable.
+    const probeDiagnostics: string[] = [];
+    const playable = await filterPlayableSources(
+        dedupedSources.map((s) => ({
+            url: s.url,
+            headers: {
+                ...BROWSER_HEADERS,
+                ...(s.headers ?? {}),
+                ...(s.noReferrer
+                    ? { Referer: 'no-referrer' }
+                    : { Referer: `${PLAYER_ORIGIN}/` })
+            },
+            label: `${s.serverName}/${s.quality}`,
+            type: s.type
+        })),
+        {
+            timeoutMs: 8_000,
+            maxSources: 10,
+            viaProxy: 'auto',
+            diagnostics: probeDiagnostics
+        }
+    );
+
+    const playableUrls = new Set(playable.map((p) => p.url));
+    const filteredSources = dedupedSources.filter((s) =>
+        playableUrls.has(s.url)
+    );
+
     return {
-        sources: dedupedSources,
+        sources: filteredSources,
         subtitles: dedupedSubs,
-        servers: okServers
+        servers: okServers,
+        probeDiagnostics
     };
 }
 

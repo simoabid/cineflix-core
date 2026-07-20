@@ -22,6 +22,8 @@ export type M111ResolveResult = {
     sources: M111StreamSource[];
     subtitles: M111Subtitle[];
     servers: M111Server[];
+    /** Playability probe messages (filtered dead mirrors / 410 / etc.). */
+    probeDiagnostics?: string[];
 };
 
 /** Decrypted momlover envelope (loose). */
