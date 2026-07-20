@@ -334,9 +334,11 @@ export class VidNestProvider extends BaseProvider {
                 type: s.type
             })),
             {
-                timeoutMs: 8_000,
-                maxSources: 12,
-                viaProxy: 'auto',
+                timeoutMs: 5_000,
+                maxSources: 8,
+                // Force PROXY_URL for CDN probes (moviebox/hakunaymatata 429 on bare EC2)
+                viaProxy: true,
+                mode: 'quick',
                 diagnostics: probeDiagnostics
             }
         );
@@ -404,11 +406,11 @@ export class VidNestProvider extends BaseProvider {
     }
 
     private async fetchVidnest(url: string) {
-        // scrapeFetch: API may behave differently on EC2 vs residential laptop.
+        // Always use PROXY_URL when set — new.vidnest.fun / CDNs rate-limit EC2.
         const res = await scrapeFetch(url, {
             headers: this.HEADERS,
             timeoutMs: 20_000,
-            viaProxy: 'auto'
+            viaProxy: true
         });
 
         if (!res.ok) {

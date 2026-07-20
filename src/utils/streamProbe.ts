@@ -37,14 +37,19 @@ export type ProbeResult<T extends ProbeableSource> =
     | { ok: false; source: T; reason: ProbeFailureReason; detail: string };
 
 export type FilterPlayableOptions = {
-    /** Per-source timeout (ms). Default 8000. */
+    /** Per-source timeout (ms). Default 5000. */
     timeoutMs?: number;
-    /** Max sources to probe (rest dropped with diagnostic). Default 12. */
+    /** Max sources to probe (rest dropped with diagnostic). Default 8. */
     maxSources?: number;
     /** scrapeFetch viaProxy. Default 'auto'. */
     viaProxy?: boolean | 'auto';
     /** Optional sink for human-readable diagnostics. */
     diagnostics?: string[];
+    /**
+     * quick = playlist structure + ranged first-byte sample (default).
+     * Never downloads full media segments (was causing Videasy 20s timeouts).
+     */
+    mode?: 'quick' | 'full';
 };
 
 const MEDIA_EXT = /\.(?:ts|m4s|m4a|mp4|aac|cmfv|cmfa)(?:\?|$)/i;
@@ -120,6 +125,53 @@ function isLikelyMp4(url: string, type?: string): boolean {
     return u.includes('.mp4') && !u.includes('m3u8');
 }
 
+/** Small ranged GET — never pull a full multi‑MB segment during scrape. */
+async function fetchByteSample(
+    url: string,
+    headers: Record<string, string>,
+    timeoutMs: number,
+    viaProxy: boolean | 'auto',
+    maxBytes = 4095
+): Promise<{ status: number; buf: Uint8Array; contentType: string }> {
+    const res = await scrapeFetch(url, {
+        method: 'GET',
+        headers: {
+            ...headers,
+            Range: `bytes=0-${maxBytes}`
+        },
+        timeoutMs,
+        viaProxy
+    });
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!res.ok && res.status !== 206) {
+        return { status: res.status, buf: new Uint8Array(), contentType };
+    }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    return { status: res.status, buf, contentType };
+}
+
+function sampleLooksLikeMedia(buf: Uint8Array, contentType: string): boolean {
+    if (buf.length === 0) return false;
+    if (isMpegTs(buf)) return true;
+    // Ranged sample is only a few KB — accept non-empty video-ish responses
+    if (/video|mpegurl|octet-stream|mp2t/i.test(contentType) && buf.length >= 188) {
+        return true;
+    }
+    // Disguised segments often claim text/html but body starts with TS sync
+    if (buf[0] === 0x47) return true;
+    // Progressive MP4 ftyp box
+    if (buf.length >= 8) {
+        const tag = String.fromCharCode(buf[4]!, buf[5]!, buf[6]!, buf[7]!);
+        if (tag === 'ftyp' || tag === 'moov' || tag === 'mdat') return true;
+    }
+    // Non-empty sample with no HTML challenge
+    const head = Buffer.from(buf.slice(0, Math.min(buf.length, 64))).toString(
+        'utf8'
+    );
+    if (/^\s*<(!DOCTYPE|html|Just a moment)/i.test(head)) return false;
+    return buf.length >= 512;
+}
+
 /**
  * Probe a single raw stream URL for first-byte playability.
  */
@@ -128,9 +180,10 @@ export async function probeSource<T extends ProbeableSource>(
     opts: {
         timeoutMs?: number;
         viaProxy?: boolean | 'auto';
+        mode?: 'quick' | 'full';
     } = {}
 ): Promise<ProbeResult<T>> {
-    const timeoutMs = opts.timeoutMs ?? 8_000;
+    const timeoutMs = opts.timeoutMs ?? 5_000;
     const viaProxy = opts.viaProxy ?? 'auto';
     const label = source.label ?? source.url.slice(0, 60);
 
@@ -158,34 +211,35 @@ export async function probeSource<T extends ProbeableSource>(
 
     try {
         if (isLikelyMp4(url, source.type)) {
-            const res = await scrapeFetch(url, {
-                method: 'HEAD',
+            // Prefer tiny range GET (HEAD often 403/405/wrong on CDNs)
+            const sample = await fetchByteSample(
+                url,
                 headers,
                 timeoutMs,
-                viaProxy
-            });
-            if (res.ok || res.status === 405 || res.status === 206) {
+                viaProxy,
+                1023
+            );
+            if (
+                (sample.status === 200 || sample.status === 206) &&
+                sampleLooksLikeMedia(sample.buf, sample.contentType)
+            ) {
                 return { ok: true, source: { ...source, url } };
             }
-            // Some CDNs reject HEAD — try tiny range GET
-            const getRes = await scrapeFetch(url, {
-                method: 'GET',
-                headers: { ...headers, Range: 'bytes=0-1023' },
-                timeoutMs,
-                viaProxy
-            });
-            if (getRes.ok || getRes.status === 206) {
-                return { ok: true, source: { ...source, url } };
+            if (sample.status === 200 || sample.status === 206) {
+                // Empty body but OK status — still treat as reachable
+                if (sample.buf.length > 0) {
+                    return { ok: true, source: { ...source, url } };
+                }
             }
             return {
                 ok: false,
                 source,
                 reason: 'http_status',
-                detail: `${label}: mp4 HTTP ${getRes.status}`
+                detail: `${label}: mp4 HTTP ${sample.status}`
             };
         }
 
-        // HLS / unknown — fetch playlist
+        // HLS / unknown — fetch playlist text only
         const res = await scrapeFetch(url, {
             headers,
             timeoutMs,
@@ -202,7 +256,6 @@ export async function probeSource<T extends ProbeableSource>(
 
         const text = await res.text();
         if (!looksLikePlayableHls(text)) {
-            // Non-HLS body: accept large binary-ish responses as progressive
             if (text.length >= 50_000) {
                 return { ok: true, source: { ...source, url } };
             }
@@ -238,19 +291,22 @@ export async function probeSource<T extends ProbeableSource>(
             };
         }
 
-        let segRes = await scrapeFetch(firstUrl, {
-            headers,
-            timeoutMs,
-            viaProxy
-        });
-
-        // Nested quality playlist
-        if (
-            segRes.ok &&
-            (NESTED_M3U8.test(firstUrl) ||
-                (segRes.headers.get('content-type') || '').includes('mpegurl'))
-        ) {
-            const nested = await segRes.text();
+        // Nested quality m3u8 — fetch as text, then sample first media line
+        if (NESTED_M3U8.test(firstUrl)) {
+            const nestedRes = await scrapeFetch(firstUrl, {
+                headers,
+                timeoutMs,
+                viaProxy
+            });
+            if (!nestedRes.ok) {
+                return {
+                    ok: false,
+                    source,
+                    reason: 'segment_http',
+                    detail: `${label}: nested playlist HTTP ${nestedRes.status}`
+                };
+            }
+            const nested = await nestedRes.text();
             if (!nested.includes('#EXTM3U')) {
                 return {
                     ok: false,
@@ -281,35 +337,38 @@ export async function probeSource<T extends ProbeableSource>(
                     detail: `${label}: malformed nested segment token`
                 };
             }
-            segRes = await scrapeFetch(firstUrl, {
-                headers,
-                timeoutMs,
-                viaProxy
-            });
         }
 
-        if (!segRes.ok) {
+        // Ranged sample only — catches interkh 410 / vix 403 without multi‑MB download
+        const sample = await fetchByteSample(
+            firstUrl,
+            headers,
+            timeoutMs,
+            viaProxy,
+            4095
+        );
+        if (sample.status >= 400) {
             return {
                 ok: false,
                 source,
                 reason: 'segment_http',
-                detail: `${label}: segment HTTP ${segRes.status}`
+                detail: `${label}: segment HTTP ${sample.status}`
             };
         }
-
-        const buf = new Uint8Array(await segRes.arrayBuffer());
-        if (buf.length >= 50_000 || isMpegTs(buf)) {
+        if (sampleLooksLikeMedia(sample.buf, sample.contentType)) {
             return { ok: true, source: { ...source, url } };
         }
-        // HTML disguise with modest size still OK if TS sync present
-        if (buf.length >= 10_000 && isMpegTs(buf)) {
-            return { ok: true, source: { ...source, url } };
+        // 200/206 with tiny non-media body
+        if (sample.status === 200 || sample.status === 206) {
+            if (sample.buf.length >= 188) {
+                return { ok: true, source: { ...source, url } };
+            }
         }
         return {
             ok: false,
             source,
             reason: 'segment_not_media',
-            detail: `${label}: segment not media-like (${buf.length}B)`
+            detail: `${label}: segment not media-like (${sample.buf.length}B, HTTP ${sample.status})`
         };
     } catch (err) {
         const msg = err instanceof Error ? err.message : 'probe failed';
@@ -335,9 +394,10 @@ export async function filterPlayableSources<T extends ProbeableSource>(
 ): Promise<T[]> {
     if (sources.length === 0) return sources;
 
-    const timeoutMs = opts.timeoutMs ?? 8_000;
-    const maxSources = opts.maxSources ?? 12;
+    const timeoutMs = opts.timeoutMs ?? 5_000;
+    const maxSources = opts.maxSources ?? 8;
     const viaProxy = opts.viaProxy ?? 'auto';
+    const mode = opts.mode ?? 'quick';
     const diagnostics = opts.diagnostics;
 
     const slice = sources.slice(0, maxSources);
@@ -348,7 +408,7 @@ export async function filterPlayableSources<T extends ProbeableSource>(
     }
 
     const results = await Promise.all(
-        slice.map((s) => probeSource(s, { timeoutMs, viaProxy }))
+        slice.map((s) => probeSource(s, { timeoutMs, viaProxy, mode }))
     );
 
     const kept: T[] = [];

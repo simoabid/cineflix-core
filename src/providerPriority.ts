@@ -28,19 +28,20 @@ export const CINEPRO_PROVIDER_PRIORITY: readonly ProviderPriorityEntry[] = [
     { id: 'vidsrc', tier: 'S', timeoutMs: 12_000 },
     { id: 'hexa', tier: 'S', timeoutMs: 15_000 },
     // A-tier
-    { id: 'm111movies', tier: 'A', timeoutMs: 15_000 },
+    // A-tier (+ room for playability probe after scrape)
+    { id: 'm111movies', tier: 'A', timeoutMs: 22_000 },
     { id: 'fsharetv', tier: 'A', timeoutMs: 12_000 },
     { id: 'lookmovie', tier: 'A', timeoutMs: 15_000 },
     { id: 'vidrock', tier: 'A', timeoutMs: 12_000 },
     { id: 'vidcore', tier: 'A', timeoutMs: 15_000 },
     { id: 'Icefy', tier: 'A', timeoutMs: 12_000 },
-    // B-tier (slow / partial)
+    // B-tier (slow / multi-server + probe)
     { id: 'Peachify', tier: 'B', timeoutMs: 15_000 },
-    { id: 'vidnest', tier: 'B', timeoutMs: 18_000 },
+    { id: 'vidnest', tier: 'B', timeoutMs: 25_000 },
     { id: 'vidking', tier: 'B', timeoutMs: 18_000 },
-    { id: 'Videasy', tier: 'B', timeoutMs: 20_000 },
+    { id: 'Videasy', tier: 'B', timeoutMs: 35_000 },
     // C-tier (flaky)
-    { id: 'vixsrc', tier: 'C', timeoutMs: 12_000 }
+    { id: 'vixsrc', tier: 'C', timeoutMs: 15_000 }
 ] as const;
 
 const priorityIndex = new Map(

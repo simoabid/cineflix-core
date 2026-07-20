@@ -21,6 +21,7 @@ import type {
     Subtitle,
     SubtitleFormat
 } from '@omss/framework';
+import { scrapeFetch } from '../../utils/scrapeFetch.js';
 import {
     BROWSER_HEADERS,
     PLAYER_ORIGIN,
@@ -137,10 +138,11 @@ export class M111MoviesProvider extends BaseProvider {
 
     async healthCheck(): Promise<boolean> {
         try {
-            const res = await fetch(this.BASE_URL, {
+            const res = await scrapeFetch(this.BASE_URL, {
                 method: 'HEAD',
                 headers: this.HEADERS,
-                signal: AbortSignal.timeout(10_000)
+                timeoutMs: 10_000,
+                viaProxy: true
             });
             return res.ok || res.status === 302 || res.status === 301;
         } catch {

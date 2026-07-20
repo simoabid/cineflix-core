@@ -114,9 +114,10 @@ export class VixSrcProvider extends BaseProvider {
                     }
                 ],
                 {
-                    timeoutMs: 10_000,
+                    timeoutMs: 5_000,
                     maxSources: 1,
                     viaProxy: true,
+                    mode: 'quick',
                     diagnostics: probeDiagnostics
                 }
             );

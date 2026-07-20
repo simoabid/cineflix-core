@@ -271,7 +271,8 @@ export async function fetchSubtitles(media: Media): Promise<M111Subtitle[]> {
         const res = await scrapeFetch(url, {
             headers: BROWSER_HEADERS,
             timeoutMs: 12_000,
-            viaProxy: 'auto'
+            // Always egress via PROXY_URL when set (Wyzie can also rate-limit DC IPs)
+            viaProxy: true
         });
         if (!res.ok) return [];
         const data = (await res.json()) as Array<{
@@ -348,9 +349,11 @@ export async function resolveM111Streams(
             type: s.type
         })),
         {
-            timeoutMs: 8_000,
-            maxSources: 10,
-            viaProxy: 'auto',
+            timeoutMs: 5_000,
+            maxSources: 8,
+            // Force PROXY_URL for CDN probes (Neta mp4 429 when hitting EC2 directly)
+            viaProxy: true,
+            mode: 'quick',
             diagnostics: probeDiagnostics
         }
     );

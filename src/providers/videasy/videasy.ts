@@ -184,9 +184,11 @@ export class VideasyProvider extends BaseProvider {
                     type: s.type
                 })),
             {
-                timeoutMs: 8_000,
-                maxSources: 12,
+                // Ranged first-byte probes only — full segment GETs timed out at 20s
+                timeoutMs: 4_000,
+                maxSources: 6,
                 viaProxy: 'auto',
+                mode: 'quick',
                 diagnostics: probeDiagnostics
             }
         );
@@ -269,7 +271,8 @@ export class VideasyProvider extends BaseProvider {
         const url = `${server.url}?${new URLSearchParams(params as Record<string, string>)}`;
         const response = await scrapeFetch(url, {
             headers: this.HEADERS,
-            timeoutMs: 25_000,
+            // Cap per-server so multi-server fan-out + probe fits progressive budget
+            timeoutMs: 12_000,
             viaProxy: true
         });
 

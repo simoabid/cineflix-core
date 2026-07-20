@@ -42,6 +42,7 @@ const DEFAULT_PROXY_HOST_SUFFIXES = [
     'lookmovie2.to',
     // VixSrc
     'vixsrc.to',
+    'vix-content.net',
     // VidKing API + page
     'speedracelight.com',
     'vidking.net',
@@ -52,6 +53,16 @@ const DEFAULT_PROXY_HOST_SUFFIXES = [
     'momlover.notyourtype.dad',
     'player.vidlove.cc',
     'vidlove.cc',
+    // 111Movies stream CDNs (probe/play 429 from bare EC2 — route via PROXY_URL)
+    'strategicgrowthpartners.site',
+    'ployan.live',
+    'finepulfe.xyz',
+    // VidNest API + common stream hosts (moviebox/hakunaymatata 429 on DC IP)
+    'vidnest.fun',
+    'new.vidnest.fun',
+    'hakunaymatata.com',
+    'boltx.stream',
+    'jpiss424did.com',
     // Borderline seed/token hosts that fail fast on EC2
     'wingsdatabase.com',
     'videasy.to',
