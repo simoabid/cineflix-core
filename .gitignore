@@ -144,6 +144,7 @@ vite.config.ts.timestamp-*
 .idea/
 .vscode/
 ignore/
+.agents/
 
 **/test.ts
 # CocoIndex Code (ccc)
